@@ -18,6 +18,7 @@ paralelo, sem que um serviço precise esperar por outro para continuar.
 Isso melhora o desempenho e a experiência do usuário;
 - **Flexibilidade**: novos microsserviços podem ser facilmente adicionados
 ao sistema.
+
 Utilize qualquer linguagem de programação para desenvolver um sistema de
 leilão composto por 3 microsserviços, cada um com uma responsabilidade
 específica. Os microsserviços vão se comunicar exclusivamente via filas de
