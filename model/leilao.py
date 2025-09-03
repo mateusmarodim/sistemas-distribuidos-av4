@@ -12,4 +12,4 @@ class Leilao:
     descricao: str
     inicio: datetime
     fim: datetime
-    status: StatusLeilao
+    status: StatusLeilao | None
