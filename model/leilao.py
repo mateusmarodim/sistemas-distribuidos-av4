@@ -13,3 +13,9 @@ class Leilao:
     inicio: datetime
     fim: datetime
     status: StatusLeilao | None
+
+@dataclass
+class EventoLeilaoFinalizado:
+    id_leilao: int
+    id_vencedor: int
+    valor: float
