@@ -19,6 +19,7 @@ import threading
 import pika
 from pika.exchange_type import ExchangeType
 from queues import Queue
+from config import Config
 from model.lance import Lance
 from model.leilao import Leilao, EventoLeilaoFinalizado
 from Crypto.PublicKey import RSA
@@ -27,32 +28,56 @@ class Cliente:
     def __init__(self):
         self.leilao_iniciado_thread = None
         self.leiloes_interesse_threads: dict[int,threading.Thread] = {}
-        self.interface_thread = None
         self.leiloes_disponiveis = set()
         self.lock: threading.Lock = threading.Lock()
 
     
     def run(self):
         print(os.getcwd())
+        
         pass
 
+    def iniciar_cliente(self):
+        print("Leilão APP\nIniciando cliente...")
+        try:
+            self.id = self.get_id()
+        except Exception as e:
+            print(e)
+            try:
+                sys.exit(0)
+            except SystemExit:
+                os._exit(0)
+
+        self.gerar_chaves_rsa(self.id)
+        
+
+
+    def get_id(self):
+        filenames = os.listdir(f"{Config.PRIVATE_KEYS_DIR})
+        for i in range(1, Config.MAX_CLIENTS):
+            filename = f"{i}_priv.pem"
+            if filename not in filenames:
+                return i
+
+        raise Exception("Número máximo de clientes excedido!")
 
     def gerar_chaves_rsa(self, id: int):
         try:
             key = RSA.generate(2048)
-            private_key = key.export_key()
-            with open("private.pem", "wb") as f:
-                f.write(private_key)
+            self.private_key = key.export_key()
+            
+            with open(f"{Config.PRIVATE_KEYS_DIR}{id}_priv.pem", "wb") as f:
+                f.write(self.private_key)
 
             public_key = key.publickey().export_key()
-            with open("receiver.pem", "wb") as f:
+            with open(f"{Config.PUBLIC_KEYS_DIR}{id}_pub.pem", "wb") as f:
                 f.write(public_key)
 
         except Exception as e:
-            pass
+            print(f"Erro ao gerar chaves RSA! {e}")
 
 
-    def iniciar_leilao_iniciado(self):
+    def setup_leilao_iniciado(self):
         self.connection_leilao_iniciado = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
         self.channel_leilao_iniciado = self.connection_leilao_iniciado.channel()
         self.channel_leilao_iniciado.exchange_declare(exchange=Queue.leilao_iniciado, exchange_type=ExchangeType.fanout)
@@ -70,7 +95,7 @@ class Cliente:
         print(f"[I] Leilão iniciado!\nID: {body.id}\nDescrição: {body.descricao}\nHorário de início: {body.inicio}\nHorário de fim: {body.fim}\n")
 
 
-    def iniciar_leilao_interesse(self, id:int):
+    def setup_leilao_interesse(self, id:int):
         _connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
         _channel = _connection.channel()
         routing_key = f"{Queue.leilao_prefix}{id}"
@@ -92,7 +117,7 @@ class Cliente:
             self.lock.release()
 
 
-    def iniciar_lance_realizado(self):
+    def setup_lance_realizado(self):
         self.connection_lance_realizado = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
         self.channel_lance_realizado = self.connection_lance_realizado.channel()
         self.channel_lance_realizado.exchange_declare(exchange=Queue.lance_realizado, exchange_type=ExchangeType.direct)
@@ -102,7 +127,10 @@ if __name__ == "__main__":
     try:
         cliente = Cliente()
         cliente.run()
-
     except KeyboardInterrupt:
         print("Interrupted")
-
+        try:
+            sys.exit(0)
+        except SystemExit:
+            os._exit(0)
+            
