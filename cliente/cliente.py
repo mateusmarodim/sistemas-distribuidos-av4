@@ -41,6 +41,7 @@ class Cliente:
         print("Leilão APP\nIniciando cliente...")
         try:
             self.id = self.get_id()
+            print(f"Cliente {self.id} iniciado.")
         except Exception as e:
             print(e)
             try:
@@ -50,6 +51,31 @@ class Cliente:
 
         self.gerar_chaves_rsa(self.id)
         
+
+    def iniciar_interface(self):
+        self.print_menu()
+        while True:
+            command = input()
+            self.handle_command(command)
+            
+
+    def print_menu(self):
+        print("Para dar um lance, digite:\nLANCE ID_DO_LEILAO VALOR_DO_LANCE\n\nPara sair, digite: SAIR\n\nPara exibir o menu novamente, digite MENU\n")
+
+
+    def handle_command(self, command: str):
+        command = command.strip()
+        command_prefix = command.split(" ")[0]
+        match command:
+            case "LANCE":
+                pass
+            case "SAIR":
+                try:
+                    sys.exit(0)
+                except SystemExit:
+                    os._exit(0)
+            case "MENU":
+                self.print_menu()
 
 
     def get_id(self):
