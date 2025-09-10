@@ -31,10 +31,11 @@ connection = pika.BlockingConnection(
     pika.ConnectionParameters(host='localhost'))
 channel = connection.channel()
 
-channel.exchange_declare(exchange='direct_logs', exchange_type='direct', durable=True)
 channel.exchange_declare(exchange='lance_realizado', exchange_type=ExchangeType.direct, durable=True)
-channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout, durable=False)
+channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.direct, durable=True)
 channel.exchange_declare(exchange='leilao_finalizado', exchange_type=ExchangeType.direct, durable=True)
+channel.exchange_declare(exchange='lance_validado', exchange_type='direct', durable=True)
+channel.exchange_declare(exchange='leilao_vencedor', exchange_type='direct', durable=True)
 
 channel.queue_declare(queue='lance_realizado', durable=True)
 channel.queue_bind(exchange="lance_realizado", queue='lance_realizado', routing_key='lance_realizado')
@@ -122,7 +123,7 @@ def callback_lance_realizado(ch, method, props, body):
         "ts": lance.get("ts"),
     }
     ch.basic_publish(
-        exchange="direct_logs",
+        exchange="lance_validado",
         routing_key="lance_validado",
         body=json.dumps(evento).encode("utf-8"),
     )
@@ -165,7 +166,7 @@ def callback_leilao_finalizado(ch, method, props, body):
             "valor": vencedor[1],
         }
         ch.basic_publish(
-            exchange="direct_logs",
+            exchange="leilao_vencedor",
             routing_key="leilao_vencedor",
             body=json.dumps(evento).encode("utf-8"),
         )

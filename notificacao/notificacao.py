@@ -14,12 +14,15 @@ connection = pika.BlockingConnection(
 )
 channel = connection.channel()
 
-channel.exchange_declare(exchange='direct_logs', exchange_type='direct', durable=True)
+channel.exchange_declare(exchange='lance_validado', exchange_type='direct', durable=True)
+channel.exchange_declare(exchange='leilao_vencedor', exchange_type='direct', durable=True)
+
+channel.exchange_declare(exchange='leilao', exchange_type='direct', durable=True)
 
 channel.queue_declare(queue='lance_validado', durable=True)
-channel.queue_bind(exchange='direct_logs', queue='lance_validado', routing_key='lance_validado')
+channel.queue_bind(exchange='lance_validado', queue='lance_validado', routing_key='lance_validado')
 channel.queue_declare(queue='leilao_vencedor', durable=True)
-channel.queue_bind(exchange='direct_logs', queue='leilao_vencedor', routing_key='leilao_vencedor')
+channel.queue_bind(exchange='leilao_vencedor', queue='leilao_vencedor', routing_key='leilao_vencedor')
 
 def callback_lance_validado(ch, method, props, body):
     try:
@@ -31,11 +34,11 @@ def callback_lance_validado(ch, method, props, body):
 
         qname = f"leilao_{int(aid)}"
         ch.queue_declare(queue=qname, durable=True) 
-        ch.queue_bind(exchange='direct_logs', queue=qname, routing_key=qname)
+        ch.queue_bind(exchange='leilao', queue=qname, routing_key=qname)
 
         envelope = {"event": "lance_validado", "data": msg}
         ch.basic_publish(
-            exchange='direct_logs',
+            exchange='leilao',
             routing_key=qname,
             body=json.dumps(envelope).encode("utf-8"),
         )
@@ -55,11 +58,11 @@ def callback_leilao_vencedor(ch, method, props, body):
 
         qname = f"leilao_{int(aid)}"
         ch.queue_declare(queue=qname, durable=True)
-        ch.queue_bind(exchange='direct_logs', queue=qname, routing_key=qname)
+        ch.queue_bind(exchange='leilao', queue=qname, routing_key=qname)
 
         envelope = {"event": "leilao_vencedor", "data": msg}
         ch.basic_publish(
-            exchange='direct_logs',
+            exchange='leilao',
             routing_key=qname,
             body=json.dumps(envelope).encode("utf-8"),
         )
