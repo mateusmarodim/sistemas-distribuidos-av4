@@ -16,7 +16,6 @@ channel = connection.channel()
 
 channel.exchange_declare(exchange='lance_validado', exchange_type='direct', durable=True)
 channel.exchange_declare(exchange='leilao_vencedor', exchange_type='direct', durable=True)
-
 channel.exchange_declare(exchange='leilao', exchange_type='direct', durable=True)
 
 channel.queue_declare(queue='lance_validado', durable=True)
@@ -41,6 +40,7 @@ def callback_lance_validado(ch, method, props, body):
             exchange='leilao',
             routing_key=qname,
             body=json.dumps(envelope).encode("utf-8"),
+            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
         )
         ch.basic_ack(method.delivery_tag)
 
@@ -65,6 +65,7 @@ def callback_leilao_vencedor(ch, method, props, body):
             exchange='leilao',
             routing_key=qname,
             body=json.dumps(envelope).encode("utf-8"),
+            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
         )
         ch.basic_ack(method.delivery_tag)
 

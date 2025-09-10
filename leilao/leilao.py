@@ -31,28 +31,10 @@ leiloes = [
         "fim": datetime.now() + timedelta(seconds=90),
         "status": "aguardando"
     },
-    {
-        "id": 3,
-        "descricao": "Câmera Canon EOS R6",
-        "inicio": datetime.now() + timedelta(seconds=50),
-        "fim": datetime.now() + timedelta(seconds=120),
-        "status": "aguardando"
-    },
-    {
-        "id": 4,
-        "descricao": "Tablet iPad Air",
-        "inicio": datetime.now() + timedelta(seconds=70),
-        "fim": datetime.now() + timedelta(seconds=150),
-        "status": "aguardando"
-    },
-    {
-        "id": 5,
-        "descricao": "Console PlayStation 5",
-        "inicio": datetime.now() + timedelta(seconds=90),
-        "fim": datetime.now() + timedelta(seconds=180),
-        "status": "aguardando"
-    }
+
 ]
+
+timers_finalizacao = {}
 
 connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
 channel = connection.channel()
@@ -79,13 +61,7 @@ def iniciar_leilao(leilao):
         properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
     )
     
-    print(f"[LEILÃO] Iniciado leilão {leilao['id_leilao']}: {leilao['descricao']}")
-    
-    # Agendar finalização
-    tempo_duracao = (leilao["fim"] - datetime.now()).total_seconds()
-    if tempo_duracao > 0:
-        timer = threading.Timer(tempo_duracao, finalizar_leilao, args=[leilao])
-        timer.start()
+    print(f"[LEILÃO] Iniciado leilão {leilao['id']}: {leilao['descricao']}")
 
 def finalizar_leilao(leilao):
     """Finaliza um leilão e publica evento leilao_finalizado"""
@@ -111,10 +87,17 @@ def agendar_leiloes():
     for leilao in leiloes:
         tempo_para_inicio = (leilao["inicio"] - agora).total_seconds()
         
+        tempo_para_fim = (leilao["fim"] - agora).total_seconds()
+        if tempo_para_fim > 0:
+            timer_fim = threading.Timer(tempo_para_fim, finalizar_leilao, args=[leilao])
+            timer_fim.start()
+            timers_finalizacao[leilao["id"]] = timer_fim
+            print(f"[LEILÃO] Agendado fim do leilão {leilao['id']} em {tempo_para_fim:.1f}s")
+        
         if tempo_para_inicio > 0:
-            timer = threading.Timer(tempo_para_inicio, iniciar_leilao, args=[leilao])
-            timer.start()
-            print(f"[LEILÃO] Agendado leilão {leilao['id']} em {tempo_para_inicio:.1f}s")
+            timer_inicio = threading.Timer(tempo_para_inicio, iniciar_leilao, args=[leilao])
+            timer_inicio.start()
+            print(f"[LEILÃO] Agendado início do leilão {leilao['id']} em {tempo_para_inicio:.1f}s")
         else:
             print(f"[LEILÃO] Iniciando leilão {leilao['id']} imediatamente")
             iniciar_leilao(leilao)
@@ -133,5 +116,8 @@ if __name__ == "__main__":
             
     except KeyboardInterrupt:
         print("\n[LEILÃO] Parando microsserviço...")
+        for timer in timers_finalizacao.values():
+            if timer.is_alive():
+                timer.cancel()
         connection.close()
         print("[LEILÃO] Microsserviço parado")

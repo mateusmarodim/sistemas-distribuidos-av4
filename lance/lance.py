@@ -31,11 +31,12 @@ connection = pika.BlockingConnection(
     pika.ConnectionParameters(host='localhost'))
 channel = connection.channel()
 
-channel.exchange_declare(exchange='lance_realizado', exchange_type=ExchangeType.direct, durable=True)
-channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.direct, durable=True)
+channel.exchange_declare(exchange='lance_realizado', exchange_type=ExchangeType.direct)
+channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout)
 channel.exchange_declare(exchange='leilao_finalizado', exchange_type=ExchangeType.direct, durable=True)
-channel.exchange_declare(exchange='lance_validado', exchange_type='direct', durable=True)
-channel.exchange_declare(exchange='leilao_vencedor', exchange_type='direct', durable=True)
+channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
+channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
+
 
 channel.queue_declare(queue='lance_realizado', durable=True)
 channel.queue_bind(exchange="lance_realizado", queue='lance_realizado', routing_key='lance_realizado')
@@ -58,7 +59,7 @@ def callback_lance_realizado(ch, method, props, body):
         ch.basic_ack(method.delivery_tag)
         return
     
-    lance     = msg.get("lance") or {}
+    lance = msg.get("lance") or {}
     signature_headers = msg.get("signature_headers") or {}
 
     id_leilao = lance.get("id_leilao")
@@ -126,6 +127,7 @@ def callback_lance_realizado(ch, method, props, body):
         exchange="lance_validado",
         routing_key="lance_validado",
         body=json.dumps(evento).encode("utf-8"),
+        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
     )
 
     ch.basic_ack(method.delivery_tag)
@@ -133,7 +135,7 @@ def callback_lance_realizado(ch, method, props, body):
 def callback_leilao_iniciado(ch, method, props, body):
     try:
         msg = json.loads(body.decode("utf-8"))
-        id_leilao = msg.get("id_leilao")
+        id_leilao = msg.get("id")
         if id_leilao is None:
             print(" [x] Invalid leilao_iniciado message")
             ch.basic_ack(method.delivery_tag); 
@@ -149,7 +151,7 @@ def callback_leilao_iniciado(ch, method, props, body):
 def callback_leilao_finalizado(ch, method, props, body):
     try:
         msg = json.loads(body.decode("utf-8"))
-        id_leilao = msg.get("id_leilao")
+        id_leilao = msg.get("id")
 
         if id_leilao is None:
             print(" [x] Invalid leilao_finalizado message")
@@ -169,6 +171,7 @@ def callback_leilao_finalizado(ch, method, props, body):
             exchange="leilao_vencedor",
             routing_key="leilao_vencedor",
             body=json.dumps(evento).encode("utf-8"),
+            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
         )
         ch.basic_ack(method.delivery_tag)
 

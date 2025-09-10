@@ -19,8 +19,6 @@ import sys
 import threading
 import pika
 from pika.exchange_type import ExchangeType
-from queues import Queue
-from config import Config
 from model.lance import Lance
 from model.leilao import Leilao, EventoLeilaoFinalizado
 from Crypto.PublicKey import RSA
@@ -28,6 +26,7 @@ from Crypto.Hash import SHA256
 from Crypto.Signature import pkcs1_15
 import json
 import base64
+from datetime import datetime
 
 class Cliente:
     def __init__(self):
@@ -92,29 +91,33 @@ class Cliente:
         valor_lance = comando[2]
         lance = Lance(id_leilao=id_leilao, id_usuario=self.id, valor=valor_lance)
         mensagem = self.construir_mensagem(lance)
-        self.channel_lance_realizado.basic_publish(exchange="lance_realizado", routing_key=f"leilao_{id_leilao}", body=mensagem)
+        self.channel_lance_realizado.basic_publish(exchange="lance_realizado", routing_key=f"lance_realizado", body=mensagem, properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
         
         if id_leilao not in self.leiloes_interesse_threads.keys():
             self.iniciar_leilao_interesse_thread(id_leilao)
 
 
     def construir_mensagem(self, lance: Lance):
-        mensagem = bytes(str(lance), 'utf-8')
-        hash = SHA256.new(mensagem)
-        assinatura = pkcs1_15.new(self.private_key).sign(hash)
-
-        message_dict = {
-            "mensagem": base64.b64encode(mensagem).decode('utf-8'), 
-            "assinatura": base64.b64encode(assinatura).decode('utf-8')
+        payload = {
+            "id_leilao": lance.id_leilao,
+            "id_usuario": lance.id_usuario,
+            "valor": float(lance.valor),
+            "ts": datetime.utcnow().isoformat() + "Z"
         }
-        return json.dumps(message_dict)
+        msg_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        h = SHA256.new(msg_bytes)
+        assinatura = pkcs1_15.new(self.private_key).sign(h)
+        return json.dumps({
+            "lance": payload,
+            "signature_headers": {"sig": base64.b64encode(assinatura).decode("utf-8")}
+        })
 
 
     @staticmethod
     def get_id():
-        filenames = os.listdir(os.getcwd()+"/cliente/keys/")
+        filenames = os.listdir(f"{os.getcwd()}/chaves_privadas/")
         for i in range(1, 15):
-            filename = f"{i}_priv.pem"
+            filename = f"usuario_{i}_private.pem"
             if filename not in filenames:
                 return i
 
@@ -180,32 +183,34 @@ class Cliente:
         _connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
         _channel = _connection.channel()
         routing_key = f"leilao_{id}"
-        _channel.exchange_declare(exchange=routing_key, exchange_type=ExchangeType.direct)
+        _channel.exchange_declare(exchange="leilao", exchange_type=ExchangeType.direct, durable=True)
         leilao_queue = _channel.queue_declare(queue="", exclusive=True)
-        _channel.queue_bind(exchange=routing_key, queue=leilao_queue.method.queue, routing_key=routing_key)
+        _channel.queue_bind(exchange="leilao", queue=leilao_queue.method.queue, routing_key=routing_key)
         _channel.basic_consume(queue=leilao_queue.method.queue, on_message_callback=self.leilao_interesse_callback, auto_ack=True)
         _channel.start_consuming()
         
     
     def leilao_interesse_callback(self, ch, method, properties, body):
         try:
-            data = json.loads(body.decode('utf-8'))
+            msg = json.loads(body.decode("utf-8"))
             
-            if 'id_leilao' in data and 'id_usuario' in data and 'valor' in data:
-                lance = Lance.from_dict(data)
+            payload = msg.get("data", msg)
+
+            if "id_leilao" in payload and "id_usuario" in payload and "valor" in payload:
+            
+                lance = Lance.from_dict(payload)
                 print(f"[I] Lance publicado no leilão {lance.id_leilao}\nUsuário: {lance.id_usuario}\nValor: {lance.valor}")
-            elif 'id_vencedor' in data:
-                evento = EventoLeilaoFinalizado.from_dict(data)
+
+            elif "id_vencedor" in payload:
+                
+                evento = EventoLeilaoFinalizado.from_dict(payload)
                 print(f"[I] Leilão finalizado!\nID: {evento.id_leilao}\nVencedor: Usuário {evento.id_vencedor}\nValor: {evento.valor}")
-                self.lock.acquire()
-                self.leiloes_disponiveis.discard(evento.id_leilao)
-                self.lock.release()
+                
+                with self.lock:
+                    self.leiloes_disponiveis.discard(evento.id_leilao)
+
         except Exception as e:
             print(f"Erro ao processar mensagem de interesse: {e}")
-        finally:
-            if self.lock.locked():
-                self.lock.release()
-
 
     def setup_lance_realizado(self):
         self.connection_lance_realizado = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
