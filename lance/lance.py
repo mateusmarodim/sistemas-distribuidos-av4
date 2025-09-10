@@ -14,3 +14,159 @@
 # informando o ID do leilão, o ID do vencedor do leilão e o valor
 # negociado. O vencedor é o que efetuou o maior lance válido até o
 # encerramento.
+
+#!/usr/bin/env python
+import pika
+import sys
+import json, base64
+from Crypto.PublicKey import RSA
+from Crypto.Signature import pkcs1_15
+from Crypto.Hash import SHA256
+
+leilao_status = {}
+leilao_vencedor = {}
+
+connection = pika.BlockingConnection(
+    pika.ConnectionParameters(host='localhost'))
+channel = connection.channel()
+
+channel.exchange_declare(exchange='direct_logs', exchange_type='direct')
+
+channel.queue_declare(queue='lance_realizado', durable=True)
+channel.queue_bind(exchange="direct_logs", queue='lance_realizado', routing_key='lance_realizado')
+channel.queue_declare(queue='leilao_iniciado', durable=True)
+channel.queue_bind(exchange="direct_logs", queue='leilao_iniciado', routing_key='leilao_iniciado')
+channel.queue_declare(queue='leilao_finalizado', durable=True)
+channel.queue_bind(exchange="direct_logs", queue='leilao_finalizado', routing_key='leilao_finalizado')
+
+def callback_lance_realizado(ch, method, props, body):
+    try:
+        msg = json.loads(body.decode("utf-8"))
+    except Exception as e:
+        print(" [x] Invalid JSON")
+        ch.basic_ack(method.delivery_tag)
+        return
+    
+    lance     = msg.get("lance") or {}
+    signature_headers = msg.get("signature_headers") or {}
+
+    id_leilao = lance.get("id_leilao")
+    id_usuario = lance.get("id_usuario")
+    valor = lance.get("valor")
+    sig_b64    = signature_headers.get("sig")
+
+    if id_leilao is None or id_usuario is None or valor is None or not sig_b64:
+        print(" [x] Invalid lance_realizado message")
+        ch.basic_ack(method.delivery_tag)
+        return
+
+    try:
+        id_leilao  = int(id_leilao)
+        id_usuario = int(id_usuario)
+        valor      = float(valor)
+    except Exception as e:
+        print(" [x] Tipagem inválida em lance_realizado")
+        ch.basic_ack(method.delivery_tag)
+        return
+    
+    local_chave = f"../chaves_publicas/usuario_{id_usuario}_public.der"
+    try:
+        key = RSA.import_key(open(local_chave, "rb").read())
+    except Exception as e:
+        print(f" [x] Falha ao carregar chave pública: {e}")
+        ch.basic_ack(method.delivery_tag)
+        return
+    
+    message_bytes = json.dumps({
+        "id_leilao": id_leilao,
+        "id_usuario": id_usuario,
+        "valor": valor,
+        "ts": lance.get("ts"),
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    h = SHA256.new(message_bytes)
+
+    try:
+        signature = base64.b64decode(sig_b64)
+        pkcs1_15.new(key).verify(h, signature)
+    except (ValueError, TypeError):
+        print(" [x]  Assinatura inválida")
+        ch.basic_ack(method.delivery_tag)
+        return       
+
+    status = leilao_status.get(id_leilao)
+    if status != "ativo":
+        print(" [x] Lance inválido")
+        ch.basic_ack(method.delivery_tag)
+        return        
+    ultimo_lance = leilao_vencedor.get(id_leilao) or (None, None)
+    if ultimo_lance[1] is not None and valor <= ultimo_lance[1]:
+        print(" [x] Lance inválido")
+        ch.basic_ack(method.delivery_tag)
+        return
+    leilao_vencedor[id_leilao] = (id_usuario, valor)
+
+    evento = {
+        "id_leilao": id_leilao,
+        "id_usuario": id_usuario,
+        "valor": valor,
+        "ts": lance.get("ts"),
+    }
+    ch.basic_publish(
+        exchange="direct_logs",
+        routing_key="lance_validado",
+        body=json.dumps(evento).encode("utf-8"),
+    )
+
+    ch.basic_ack(method.delivery_tag)
+
+def callback_leilao_iniciado(ch, method, props, body):
+    try:
+        msg = json.loads(body.decode("utf-8"))
+        id_leilao = msg.get("id_leilao")
+        if id_leilao is None:
+            print(" [x] Invalid leilao_iniciado message")
+            ch.basic_ack(method.delivery_tag); 
+            return
+        id_leilao = int(id_leilao)
+        leilao_status[id_leilao] = "ativo"
+        leilao_vencedor[id_leilao] = (None, None)
+        ch.basic_ack(method.delivery_tag)
+    except Exception as e:
+        print(" [x] Erro leilao_iniciado:", e)
+        ch.basic_ack(method.delivery_tag)
+
+def callback_leilao_finalizado(ch, method, props, body):
+    try:
+        msg = json.loads(body.decode("utf-8"))
+        id_leilao = msg.get("id_leilao")
+
+        if id_leilao is None:
+            print(" [x] Invalid leilao_finalizado message")
+            ch.basic_ack(method.delivery_tag); 
+            return
+        
+        id_leilao = int(id_leilao)
+        leilao_status[id_leilao] = "encerrado"
+
+        vencedor = leilao_vencedor.get(id_leilao) or (None, None)
+        evento = {
+            "id_leilao": id_leilao,
+            "id_vencedor": vencedor[0],
+            "valor": vencedor[1],
+        }
+        ch.basic_publish(
+            exchange="direct_logs",
+            routing_key="leilao_vencedor",
+            body=json.dumps(evento).encode("utf-8"),
+        )
+        ch.basic_ack(method.delivery_tag)
+
+    except Exception as e:
+        print(" [x] Erro leilao_finalizado:", e)
+        ch.basic_ack(method.delivery_tag)
+
+channel.basic_consume(queue='lance_realizado', on_message_callback=callback_lance_realizado, auto_ack=False)
+channel.basic_consume(queue='leilao_iniciado', on_message_callback=callback_leilao_iniciado, auto_ack=False)
+channel.basic_consume(queue='leilao_finalizado', on_message_callback=callback_leilao_finalizado, auto_ack=False)
+
+channel.start_consuming()
