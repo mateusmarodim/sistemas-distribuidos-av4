@@ -16,8 +16,10 @@
 # encerramento.
 
 import pika
+import os
 import sys
 import json, base64
+from pika.exchange_type import ExchangeType
 from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
@@ -30,18 +32,21 @@ connection = pika.BlockingConnection(
 channel = connection.channel()
 
 channel.exchange_declare(exchange='direct_logs', exchange_type='direct', durable=True)
+channel.exchange_declare(exchange='lance_realizado', exchange_type=ExchangeType.direct, durable=True)
+channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout, durable=False)
+channel.exchange_declare(exchange='leilao_finalizado', exchange_type=ExchangeType.direct, durable=True)
 
 channel.queue_declare(queue='lance_realizado', durable=True)
-channel.queue_bind(exchange="direct_logs", queue='lance_realizado', routing_key='lance_realizado')
+channel.queue_bind(exchange="lance_realizado", queue='lance_realizado', routing_key='lance_realizado')
 channel.queue_declare(queue='leilao_iniciado', durable=True)
-channel.queue_bind(exchange="direct_logs", queue='leilao_iniciado', routing_key='leilao_iniciado')
+channel.queue_bind(exchange="leilao_iniciado", queue='leilao_iniciado', routing_key='leilao_iniciado')
 channel.queue_declare(queue='leilao_finalizado', durable=True)
-channel.queue_bind(exchange="direct_logs", queue='leilao_finalizado', routing_key='leilao_finalizado')
+channel.queue_bind(exchange="leilao_finalizado", queue='leilao_finalizado', routing_key='leilao_finalizado')
 
 channel.queue_declare(queue='lance_validado', durable=True)
-channel.queue_bind(exchange='direct_logs', queue='lance_validado', routing_key='lance_validado')
+channel.queue_bind(exchange='lance_validado', queue='lance_validado', routing_key='lance_validado')
 channel.queue_declare(queue='leilao_vencedor', durable=True)
-channel.queue_bind(exchange='direct_logs', queue='leilao_vencedor', routing_key='leilao_vencedor')
+channel.queue_bind(exchange='leilao_vencedor', queue='leilao_vencedor', routing_key='leilao_vencedor')
 
 
 def callback_lance_realizado(ch, method, props, body):
@@ -74,7 +79,7 @@ def callback_lance_realizado(ch, method, props, body):
         ch.basic_ack(method.delivery_tag)
         return
     
-    local_chave = f"../chaves_publicas/usuario_{id_usuario}_public.der"
+    local_chave = f"{os.getcwd()}/chaves_publicas/usuario_{id_usuario}_public.pem"
     try:
         key = RSA.import_key(open(local_chave, "rb").read())
     except Exception as e:

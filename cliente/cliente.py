@@ -26,6 +26,8 @@ from model.leilao import Leilao, EventoLeilaoFinalizado
 from Crypto.PublicKey import RSA
 from Crypto.Hash import SHA256
 from Crypto.Signature import pkcs1_15
+import json
+import base64
 
 class Cliente:
     def __init__(self):
@@ -49,8 +51,8 @@ class Cliente:
 
         self.gerar_chaves_rsa(self.id)
         self.setup_lance_realizado()
-
-        
+        self.iniciar_leilao_iniciado_thread()
+        self.iniciar_interface()
 
     def iniciar_interface(self):
         self.print_menu()
@@ -81,25 +83,37 @@ class Cliente:
 
     def realizar_lance(self, comando: str):
         comando = comando.split(" ")
-        id_leilao = comando[1]
+        id_leilao = int(comando[1])
+
+        if id_leilao not in self.leiloes_disponiveis:
+            print(f"[E] Leilão {id_leilao} não disponível!")
+            return
+        
         valor_lance = comando[2]
         lance = Lance(id_leilao=id_leilao, id_usuario=self.id, valor=valor_lance)
         mensagem = self.construir_mensagem(lance)
-        self.channel_lance_realizado.basic_publish(exchange=Queue.lance_realizado, routing_key=f"{Queue.lance_prefix}{str(id_leilao)}", body=mensagem)
+        self.channel_lance_realizado.basic_publish(exchange="lance_realizado", routing_key=f"leilao_{id_leilao}", body=mensagem)
+        
+        if id_leilao not in self.leiloes_interesse_threads.keys():
+            self.iniciar_leilao_interesse_thread(id_leilao)
 
 
     def construir_mensagem(self, lance: Lance):
-        mensagem = bytes(str(lance))
+        mensagem = bytes(str(lance), 'utf-8')
         hash = SHA256.new(mensagem)
         assinatura = pkcs1_15.new(self.private_key).sign(hash)
 
-        return {"mensagem": mensagem, "assinatura": assinatura}
+        message_dict = {
+            "mensagem": base64.b64encode(mensagem).decode('utf-8'), 
+            "assinatura": base64.b64encode(assinatura).decode('utf-8')
+        }
+        return json.dumps(message_dict)
 
 
     @staticmethod
     def get_id():
-        filenames = os.listdir(f"{Config.PRIVATE_KEYS_DIR}")
-        for i in range(1, Config.MAX_CLIENTS):
+        filenames = os.listdir(os.getcwd()+"/cliente/keys/")
+        for i in range(1, 15):
             filename = f"{i}_priv.pem"
             if filename not in filenames:
                 return i
@@ -110,13 +124,14 @@ class Cliente:
     def gerar_chaves_rsa(self, id: int):
         try:
             key = RSA.generate(2048)
-            self.private_key = key.export_key()
+            self.private_key = key
             
-            with open(f"{Config.PRIVATE_KEYS_DIR}{id}_priv.pem", "wb") as f:
-                f.write(self.private_key)
+            private_key_bytes = key.export_key()
+            with open(f"{os.getcwd()}/chaves_privadas/usuario_{id}_private.pem", "wb") as f:
+                f.write(private_key_bytes)
 
             public_key = key.publickey().export_key()
-            with open(f"{Config.PUBLIC_KEYS_DIR}{id}_pub.pem", "wb") as f:
+            with open(f"{os.getcwd()}/chaves_publicas/usuario_{id}_public.pem", "wb") as f:
                 f.write(public_key)
 
         except Exception as e:
@@ -128,22 +143,27 @@ class Cliente:
         self.leilao_iniciado_thread.daemon = True
         self.leilao_iniciado_thread.start()
 
+
     def setup_leilao_iniciado(self):
         self.connection_leilao_iniciado = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
         self.channel_leilao_iniciado = self.connection_leilao_iniciado.channel()
-        self.channel_leilao_iniciado.exchange_declare(exchange=Queue.leilao_iniciado, exchange_type=ExchangeType.fanout)
-        self.leilao_iniciado = self.channel.queue_declare(queue='', exclusive=True)
+        self.channel_leilao_iniciado.exchange_declare(exchange="leilao_iniciado", exchange_type=ExchangeType.fanout)
+        self.leilao_iniciado = self.channel_leilao_iniciado.queue_declare(queue='', exclusive=True)
         queue_name = self.leilao_iniciado.method.queue
-        self.channel_leilao_iniciado.queue_bind(exchange=Queue.leilao_iniciado, queue=queue_name)
+        self.channel_leilao_iniciado.queue_bind(exchange="leilao_iniciado", queue=queue_name)
         self.channel_leilao_iniciado.basic_consume(queue=queue_name, on_message_callback=self.leilao_iniciado_callback, auto_ack=True)
         self.channel_leilao_iniciado.start_consuming()
 
 
-    def leilao_iniciado_callback(self, ch, method, properties, body:Leilao):
-        self.lock.acquire()
-        self.leiloes_disponiveis.add(body.id)
-        self.lock.release()
-        print(f"[I] Leilão iniciado!\nID: {body.id}\nDescrição: {body.descricao}\nHorário de início: {body.inicio}\nHorário de fim: {body.fim}\n")
+    def leilao_iniciado_callback(self, ch, method, properties, body):
+        leilao_data = json.loads(body.decode('utf-8'))
+        leilao = Leilao.from_dict(leilao_data)
+        
+        with self.lock:
+            self.leiloes_disponiveis.add(leilao.id)
+        
+        print(f"[I] Leilão iniciado!\nID: {leilao.id}\nDescrição: {leilao.descricao}\nHorário de início: {leilao.inicio}\nHorário de fim: {leilao.fim}\n")
+    
 
 
     def iniciar_leilao_interesse_thread(self, id:int):
@@ -159,7 +179,7 @@ class Cliente:
     def setup_leilao_interesse(self, id:int):
         _connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
         _channel = _connection.channel()
-        routing_key = f"{Queue.leilao_prefix}{id}"
+        routing_key = f"leilao_{id}"
         _channel.exchange_declare(exchange=routing_key, exchange_type=ExchangeType.direct)
         leilao_queue = _channel.queue_declare(queue="", exclusive=True)
         _channel.queue_bind(exchange=routing_key, queue=leilao_queue.method.queue, routing_key=routing_key)
@@ -168,30 +188,39 @@ class Cliente:
         
     
     def leilao_interesse_callback(self, ch, method, properties, body):
-        if isinstance(body, Lance):
-            print(f"[I] Lance publicado no leilão {body.id_leilao}\nUsuário: {body.id_usuario}\nValor: {body.valor}")
-
-        elif isinstance(body, EventoLeilaoFinalizado):
-            print(f"[I] Leilão finalizado!\nID: {body.id_leilao}\nVencedor: Usuário {body.id_vencedor}\nValor: {body.valor}")
-            self.lock.acquire()
-            self.leiloes_disponiveis.discard(body.id_leilao)
-            self.lock.release()
+        try:
+            data = json.loads(body.decode('utf-8'))
+            
+            if 'id_leilao' in data and 'id_usuario' in data and 'valor' in data:
+                lance = Lance.from_dict(data)
+                print(f"[I] Lance publicado no leilão {lance.id_leilao}\nUsuário: {lance.id_usuario}\nValor: {lance.valor}")
+            elif 'id_vencedor' in data:
+                evento = EventoLeilaoFinalizado.from_dict(data)
+                print(f"[I] Leilão finalizado!\nID: {evento.id_leilao}\nVencedor: Usuário {evento.id_vencedor}\nValor: {evento.valor}")
+                self.lock.acquire()
+                self.leiloes_disponiveis.discard(evento.id_leilao)
+                self.lock.release()
+        except Exception as e:
+            print(f"Erro ao processar mensagem de interesse: {e}")
+        finally:
+            if self.lock.locked():
+                self.lock.release()
 
 
     def setup_lance_realizado(self):
         self.connection_lance_realizado = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
         self.channel_lance_realizado = self.connection_lance_realizado.channel()
-        self.channel_lance_realizado.exchange_declare(exchange=Queue.lance_realizado, exchange_type=ExchangeType.direct)
-
+        self.channel_lance_realizado.exchange_declare(exchange="lance_realizado", exchange_type=ExchangeType.direct)
     
+
 if __name__ == "__main__":
     try:
         cliente = Cliente()
-        cliente.run()
+        cliente.iniciar_cliente()
     except KeyboardInterrupt:
         print("Interrupted")
         try:
             sys.exit(0)
         except SystemExit:
             os._exit(0)
-            
+
