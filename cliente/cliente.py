@@ -15,6 +15,7 @@
 # interesse ou quando o leilão for encerrado. Por exemplo, se o
 # cliente der um lance no leilão de ID 1, ele escutará a fila leilao_1.
 import os
+import sys
 import threading
 import pika
 from pika.exchange_type import ExchangeType
@@ -23,6 +24,8 @@ from config import Config
 from model.lance import Lance
 from model.leilao import Leilao, EventoLeilaoFinalizado
 from Crypto.PublicKey import RSA
+from Crypto.Hash import SHA256
+from Crypto.Signature import pkcs1_15
 
 class Cliente:
     def __init__(self):
@@ -31,11 +34,6 @@ class Cliente:
         self.leiloes_disponiveis = set()
         self.lock: threading.Lock = threading.Lock()
 
-    
-    def run(self):
-        print(os.getcwd())
-        
-        pass
 
     def iniciar_cliente(self):
         print("Leilão APP\nIniciando cliente...")
@@ -50,25 +48,28 @@ class Cliente:
                 os._exit(0)
 
         self.gerar_chaves_rsa(self.id)
+        self.setup_lance_realizado()
+
         
 
     def iniciar_interface(self):
         self.print_menu()
         while True:
-            command = input()
-            self.handle_command(command)
-            
+            comando = input()
+            self.handle_comando(comando)
 
-    def print_menu(self):
+
+    @staticmethod
+    def print_menu():
         print("Para dar um lance, digite:\nLANCE ID_DO_LEILAO VALOR_DO_LANCE\n\nPara sair, digite: SAIR\n\nPara exibir o menu novamente, digite MENU\n")
 
 
-    def handle_command(self, command: str):
-        command = command.strip()
-        command_prefix = command.split(" ")[0]
-        match command:
+    def handle_comando(self, comando: str):
+        comando = comando.strip()
+        comando_prefix = comando.split(" ")[0].strip()
+        match comando_prefix:
             case "LANCE":
-                pass
+                self.realizar_lance(comando)
             case "SAIR":
                 try:
                     sys.exit(0)
@@ -78,14 +79,33 @@ class Cliente:
                 self.print_menu()
 
 
-    def get_id(self):
-        filenames = os.listdir(f"{Config.PRIVATE_KEYS_DIR})
+    def realizar_lance(self, comando: str):
+        comando = comando.split(" ")
+        id_leilao = comando[1]
+        valor_lance = comando[2]
+        lance = Lance(id_leilao=id_leilao, id_usuario=self.id, valor=valor_lance)
+        mensagem = self.construir_mensagem(lance)
+        self.channel_lance_realizado.basic_publish(exchange=Queue.lance_realizado, routing_key=f"{Queue.lance_prefix}{str(id_leilao)}", body=mensagem)
+
+
+    def construir_mensagem(self, lance: Lance):
+        mensagem = bytes(str(lance))
+        hash = SHA256.new(mensagem)
+        assinatura = pkcs1_15.new(self.private_key).sign(hash)
+
+        return {"mensagem": mensagem, "assinatura": assinatura}
+
+
+    @staticmethod
+    def get_id():
+        filenames = os.listdir(f"{Config.PRIVATE_KEYS_DIR}")
         for i in range(1, Config.MAX_CLIENTS):
             filename = f"{i}_priv.pem"
             if filename not in filenames:
                 return i
 
         raise Exception("Número máximo de clientes excedido!")
+
 
     def gerar_chaves_rsa(self, id: int):
         try:
@@ -102,6 +122,11 @@ class Cliente:
         except Exception as e:
             print(f"Erro ao gerar chaves RSA! {e}")
 
+
+    def iniciar_leilao_iniciado_thread(self):
+        self.leilao_iniciado_thread = threading.Thread(target=self.setup_leilao_iniciado)
+        self.leilao_iniciado_thread.daemon = True
+        self.leilao_iniciado_thread.start()
 
     def setup_leilao_iniciado(self):
         self.connection_leilao_iniciado = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
@@ -120,6 +145,16 @@ class Cliente:
         self.lock.release()
         print(f"[I] Leilão iniciado!\nID: {body.id}\nDescrição: {body.descricao}\nHorário de início: {body.inicio}\nHorário de fim: {body.fim}\n")
 
+
+    def iniciar_leilao_interesse_thread(self, id:int):
+        if id in self.leiloes_interesse_threads:
+            return
+        
+        thread = threading.Thread(target=self.setup_leilao_interesse, args=(id,))
+        thread.daemon = True
+        thread.start()
+        self.leiloes_interesse_threads[id] = thread
+        
 
     def setup_leilao_interesse(self, id:int):
         _connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
