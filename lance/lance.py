@@ -15,7 +15,6 @@
 # negociado. O vencedor é o que efetuou o maior lance válido até o
 # encerramento.
 
-#!/usr/bin/env python
 import pika
 import sys
 import json, base64
@@ -30,7 +29,7 @@ connection = pika.BlockingConnection(
     pika.ConnectionParameters(host='localhost'))
 channel = connection.channel()
 
-channel.exchange_declare(exchange='direct_logs', exchange_type='direct')
+channel.exchange_declare(exchange='direct_logs', exchange_type='direct', durable=True)
 
 channel.queue_declare(queue='lance_realizado', durable=True)
 channel.queue_bind(exchange="direct_logs", queue='lance_realizado', routing_key='lance_realizado')
@@ -38,6 +37,12 @@ channel.queue_declare(queue='leilao_iniciado', durable=True)
 channel.queue_bind(exchange="direct_logs", queue='leilao_iniciado', routing_key='leilao_iniciado')
 channel.queue_declare(queue='leilao_finalizado', durable=True)
 channel.queue_bind(exchange="direct_logs", queue='leilao_finalizado', routing_key='leilao_finalizado')
+
+channel.queue_declare(queue='lance_validado', durable=True)
+channel.queue_bind(exchange='direct_logs', queue='lance_validado', routing_key='lance_validado')
+channel.queue_declare(queue='leilao_vencedor', durable=True)
+channel.queue_bind(exchange='direct_logs', queue='leilao_vencedor', routing_key='leilao_vencedor')
+
 
 def callback_lance_realizado(ch, method, props, body):
     try:

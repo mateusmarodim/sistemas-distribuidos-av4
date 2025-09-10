@@ -21,20 +21,16 @@ channel.queue_bind(exchange='direct_logs', queue='lance_validado', routing_key='
 channel.queue_declare(queue='leilao_vencedor', durable=True)
 channel.queue_bind(exchange='direct_logs', queue='leilao_vencedor', routing_key='leilao_vencedor')
 
-##channel.basic_qos(prefetch_count=50)
-
-def on_lance_validado(ch, method, props, body):
+def callback_lance_validado(ch, method, props, body):
     try:
         msg = json.loads(body.decode("utf-8"))
-        # esperado: { "id_leilao": 1, "id_usuario": 42, "valor": 199.5, "ts": "..." }
         aid = msg.get("id_leilao")
         if aid is None:
             print("[lance_validado] sem id_leilao; ignorando.")
             return
 
-        # cria/binda a fila específica do leilão e publica
         qname = f"leilao_{int(aid)}"
-        ch.queue_declare(queue=qname, durable=True)  # idempotente
+        ch.queue_declare(queue=qname, durable=True) 
         ch.queue_bind(exchange='direct_logs', queue=qname, routing_key=qname)
 
         envelope = {"event": "lance_validado", "data": msg}
@@ -42,7 +38,6 @@ def on_lance_validado(ch, method, props, body):
             exchange='direct_logs',
             routing_key=qname,
             body=json.dumps(envelope).encode("utf-8"),
-            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )
         ch.basic_ack(method.delivery_tag)
 
@@ -50,10 +45,9 @@ def on_lance_validado(ch, method, props, body):
         print("[lance_validado] erro:", e)
         ch.basic_ack(method.delivery_tag)
 
-def on_leilao_vencedor(ch, method, props, body):
+def callback_leilao_vencedor(ch, method, props, body):
     try:
         msg = json.loads(body.decode("utf-8"))
-        # esperado: { "id_leilao": 1, "id_vencedor": 42, "valor": 350.0 }
         aid = msg.get("id_leilao")
         if aid is None:
             print("[leilao_vencedor] sem id_leilao; ignorando.")
@@ -68,7 +62,6 @@ def on_leilao_vencedor(ch, method, props, body):
             exchange='direct_logs',
             routing_key=qname,
             body=json.dumps(envelope).encode("utf-8"),
-            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )
         ch.basic_ack(method.delivery_tag)
 
@@ -77,8 +70,7 @@ def on_leilao_vencedor(ch, method, props, body):
         ch.basic_ack(method.delivery_tag)
 
 
-# Registrar consumidores
-channel.basic_consume(queue='lance_validado',  on_message_callback=on_lance_validado,  auto_ack=False)
-channel.basic_consume(queue='leilao_vencedor', on_message_callback=on_leilao_vencedor, auto_ack=False)
+channel.basic_consume(queue='lance_validado',  on_message_callback=callback_lance_validado,  auto_ack=False)
+channel.basic_consume(queue='leilao_vencedor', on_message_callback=callback_leilao_vencedor, auto_ack=False)
 
 channel.start_consuming()
