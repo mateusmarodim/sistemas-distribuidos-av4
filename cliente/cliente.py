@@ -26,7 +26,7 @@ from Crypto.Hash import SHA256
 from Crypto.Signature import pkcs1_15
 import json
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 
 class Cliente:
     def __init__(self):
@@ -102,7 +102,7 @@ class Cliente:
             "id_leilao": lance.id_leilao,
             "id_usuario": lance.id_usuario,
             "valor": float(lance.valor),
-            "ts": datetime.utcnow().isoformat() + "Z"
+            "ts": datetime.now(timezone.utc).isoformat() + "Z"
         }
         msg_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         h = SHA256.new(msg_bytes)
