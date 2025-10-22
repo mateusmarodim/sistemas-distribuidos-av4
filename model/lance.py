@@ -15,3 +15,10 @@ class Lance:
             valor=float(data['valor'])
         )
 
+    def to_dict(self):
+        """Convert the Lance instance to a dictionary"""
+        return {
+            'id_leilao': self.id_leilao,
+            'id_usuario': self.id_usuario,
+            'valor': self.valor
+        }

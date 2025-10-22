@@ -20,9 +20,11 @@ import os
 import sys
 import json, base64
 from pika.exchange_type import ExchangeType
-from Crypto.PublicKey import RSA
-from Crypto.Signature import pkcs1_15
-from Crypto.Hash import SHA256
+from fastapi import FastAPI
+from model.lance import Lance
+from model.leilao import StatusLeilao
+
+app = FastAPI()
 
 leilao_status = {}
 leilao_vencedor = {}
@@ -31,15 +33,14 @@ connection = pika.BlockingConnection(
     pika.ConnectionParameters(host='localhost'))
 channel = connection.channel()
 
-channel.exchange_declare(exchange='lance_realizado', exchange_type=ExchangeType.direct)
 channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout)
 channel.exchange_declare(exchange='leilao_finalizado', exchange_type=ExchangeType.direct, durable=True)
 channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
+channel.exchange_declare(exchange='lance_invalidado', exchange_type=ExchangeType.direct, durable=True)
 channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
 
 
-channel.queue_declare(queue='lance_realizado', durable=True)
-channel.queue_bind(exchange="lance_realizado", queue='lance_realizado', routing_key='lance_realizado')
+
 channel.queue_declare(queue='leilao_iniciado', durable=True)
 channel.queue_bind(exchange="leilao_iniciado", queue='leilao_iniciado', routing_key='leilao_iniciado')
 channel.queue_declare(queue='leilao_finalizado', durable=True)
@@ -47,74 +48,61 @@ channel.queue_bind(exchange="leilao_finalizado", queue='leilao_finalizado', rout
 
 channel.queue_declare(queue='lance_validado', durable=True)
 channel.queue_bind(exchange='lance_validado', queue='lance_validado', routing_key='lance_validado')
+channel.queue_declare(queue='lance_invalidado', durable=True)
+channel.queue_bind(exchange='lance_invalidado', queue='lance_invalidado', routing_key='lance_invalidado')
 channel.queue_declare(queue='leilao_vencedor', durable=True)
 channel.queue_bind(exchange='leilao_vencedor', queue='leilao_vencedor', routing_key='leilao_vencedor')
 
+@app.post("/lance")
+def receber_lance(lance: Lance):
+    status, message = callback_lance_realizado(channel, lance)
+    return {"status": status, "message": message}
 
-def callback_lance_realizado(ch, method, props, body):
-    try:
-        msg = json.loads(body.decode("utf-8"))
-    except Exception as e:
-        print(" [x] Invalid JSON")
-        ch.basic_ack(method.delivery_tag)
-        return
-    
-    lance = msg.get("lance") or {}
-    signature_headers = msg.get("signature_headers") or {}
 
-    id_leilao = lance.get("id_leilao")
-    id_usuario = lance.get("id_usuario")
-    valor = lance.get("valor")
-    sig_b64    = signature_headers.get("sig")
+def callback_lance_realizado(ch, lance: Lance):
 
-    if id_leilao is None or id_usuario is None or valor is None or not sig_b64:
-        print(" [x] Invalid lance_realizado message")
-        ch.basic_ack(method.delivery_tag)
-        return
+    id_leilao = lance.id_leilao
+    id_usuario = lance.id_usuario
+    valor = lance.valor
+
+    if id_leilao is None or id_usuario is None or valor is None:
+        print(" [x] Lance inválido - dados incompletos")
+        ch.basic_publish(exchange="lance_invalidado",
+        routing_key="lance_invalidado",
+        body=lance.to_dict().encode("utf-8"),
+        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        return False, 400, "Lance inválido - dados incompletos"
 
     try:
         id_leilao  = int(id_leilao)
         id_usuario = int(id_usuario)
         valor      = float(valor)
     except Exception as e:
-        print(" [x] Tipagem inválida em lance_realizado")
-        ch.basic_ack(method.delivery_tag)
-        return
-    
-    local_chave = f"{os.getcwd()}/chaves_publicas/usuario_{id_usuario}_public.pem"
-    try:
-        key = RSA.import_key(open(local_chave, "rb").read())
-    except Exception as e:
-        print(f" [x] Falha ao carregar chave pública: {e}")
-        ch.basic_ack(method.delivery_tag)
-        return
-    
-    message_bytes = json.dumps({
-        "id_leilao": id_leilao,
-        "id_usuario": id_usuario,
-        "valor": valor,
-        "ts": lance.get("ts"),
-    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    h = SHA256.new(message_bytes)
-
-    try:
-        signature = base64.b64decode(sig_b64)
-        pkcs1_15.new(key).verify(h, signature)
-    except (ValueError, TypeError):
-        print(" [x]  Assinatura inválida")
-        ch.basic_ack(method.delivery_tag)
-        return       
-
+        print(" [x] Lance inválido - tipagem incorreta")
+        ch.basic_publish(exchange="lance_invalidado",
+        routing_key="lance_invalidado",
+        body=lance.to_dict().encode("utf-8"),
+        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        return False, 400, "Lance inválido - tipagem incorreta"
+   
     status = leilao_status.get(id_leilao)
-    if status != "ativo":
-        print(" [x] Lance inválido")
-        ch.basic_ack(method.delivery_tag)
-        return        
+    if status != StatusLeilao.ATIVO.value:
+        print(" [x] Lance inválido - leilão não ativo")
+        ch.basic_publish(exchange="lance_invalidado",
+        routing_key="lance_invalidado",
+        body=lance.to_dict().encode("utf-8"),
+        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        return False, 400, "Lance inválido - leilão não está ativo"
+
     ultimo_lance = leilao_vencedor.get(id_leilao) or (None, None)
     if ultimo_lance[1] is not None and valor <= ultimo_lance[1]:
-        print(" [x] Lance inválido")
-        ch.basic_ack(method.delivery_tag)
-        return
+        print(" [x] Lance inválido - valor muito baixo")
+        ch.basic_publish(exchange="lance_invalidado",
+        routing_key="lance_invalidado",
+        body=lance.to_dict().encode("utf-8"),
+        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        return False, 400, "Lance inválido - valor muito baixo"
+
     leilao_vencedor[id_leilao] = (id_usuario, valor)
 
     evento = {
@@ -130,23 +118,23 @@ def callback_lance_realizado(ch, method, props, body):
         properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
     )
 
-    ch.basic_ack(method.delivery_tag)
 
 def callback_leilao_iniciado(ch, method, props, body):
     try:
         msg = json.loads(body.decode("utf-8"))
         id_leilao = msg.get("id")
         if id_leilao is None:
-            print(" [x] Invalid leilao_iniciado message")
+            print(" [x] Leilão inexistente")
             ch.basic_ack(method.delivery_tag); 
             return
         id_leilao = int(id_leilao)
-        leilao_status[id_leilao] = "ativo"
+        leilao_status[id_leilao] = StatusLeilao.ATIVO.value
         leilao_vencedor[id_leilao] = (None, None)
         ch.basic_ack(method.delivery_tag)
     except Exception as e:
         print(" [x] Erro leilao_iniciado:", e)
         ch.basic_ack(method.delivery_tag)
+
 
 def callback_leilao_finalizado(ch, method, props, body):
     try:
@@ -179,7 +167,6 @@ def callback_leilao_finalizado(ch, method, props, body):
         print(" [x] Erro leilao_finalizado:", e)
         ch.basic_ack(method.delivery_tag)
 
-channel.basic_consume(queue='lance_realizado', on_message_callback=callback_lance_realizado, auto_ack=False)
 channel.basic_consume(queue='leilao_iniciado', on_message_callback=callback_leilao_iniciado, auto_ack=False)
 channel.basic_consume(queue='leilao_finalizado', on_message_callback=callback_leilao_finalizado, auto_ack=False)
 

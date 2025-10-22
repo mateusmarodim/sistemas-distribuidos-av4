@@ -5,6 +5,7 @@ from enum import Enum
 class StatusLeilao(Enum):
     ATIVO = "ativo"
     ENCERRADO = "encerrado"
+    AGUARDANDO = "aguardando"
 
 @dataclass
 class Leilao:

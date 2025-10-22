@@ -15,24 +15,15 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pika.exchange_type import ExchangeType
+from model.leilao import Leilao, StatusLeilao
+from fastapi import FastAPI
+from uuid import uuid4
 
-leiloes = [
-    {
-        "id": 1,
-        "descricao": "Smartphone Samsung Galaxy S23",
-        "inicio": datetime.now() + timedelta(seconds=10),
-        "fim": datetime.now() + timedelta(seconds=60),
-        "status": "aguardando"
-    },
-    {
-        "id": 2,
-        "descricao": "Notebook Dell Inspiron 15", 
-        "inicio": datetime.now() + timedelta(seconds=30),
-        "fim": datetime.now() + timedelta(seconds=90),
-        "status": "aguardando"
-    },
+app = FastAPI()
 
-]
+
+
+leiloes = []
 
 timers_finalizacao = {}
 
@@ -42,10 +33,29 @@ channel = connection.channel()
 channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout, durable=False)
 channel.exchange_declare(exchange='leilao_finalizado', exchange_type='direct', durable=True)
 
+@app.get("/leilao")
+def get_leiloes():
+    return leiloes
+
+@app.post("/leilao")
+def criar_leilao(leilao: Leilao):
+    try:
+        leiloes.append({
+            "id": uuid4().hex,
+            "descricao": leilao.descricao,
+            "inicio": leilao.inicio,
+            "fim": leilao.fim,
+            "status": leilao.status.value if leilao.status else StatusLeilao.AGUARDANDO.value
+        })
+    except Exception as e:
+        return {"error": str(e)}
+    agendar_leiloes()
+    return {"message": "Leilão criado com sucesso"}
+
 def iniciar_leilao(leilao):
     """Inicia um leilão e publica evento leilao_iniciado"""
-    leilao["status"] = "ativo"
-    
+    leilao["status"] = StatusLeilao.ATIVO.value
+
     evento = {
         "id": leilao["id"],
         "descricao": leilao["descricao"],
@@ -65,7 +75,7 @@ def iniciar_leilao(leilao):
 
 def finalizar_leilao(leilao):
     """Finaliza um leilão e publica evento leilao_finalizado"""
-    leilao["status"] = "encerrado"
+    leilao["status"] = StatusLeilao.ENCERRADO.value
     
     evento = {
         "id": leilao["id"]
