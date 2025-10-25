@@ -19,6 +19,9 @@ import uvicorn
 from model.leilao import Leilao, StatusLeilao
 from fastapi import FastAPI
 from uuid import uuid4
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
 
 app = FastAPI()
 
@@ -82,15 +85,21 @@ def get_leiloes():
     return leiloes
 
 
+class LeilaoCreate(BaseModel):
+    descricao: str
+    inicio: datetime
+    fim: datetime
+    # status will be set internally, do not require on input
+
 @app.post("/leilao")
-def criar_leilao(leilao: Leilao):
+def criar_leilao(leilao: LeilaoCreate):
     try:
         leiloes.append({
             "id": uuid4().hex,
             "descricao": leilao.descricao,
             "inicio": leilao.inicio,
             "fim": leilao.fim,
-            "status": leilao.status.value if leilao.status else StatusLeilao.AGUARDANDO.value
+            "status": StatusLeilao.AGUARDANDO.value
         })
     except Exception as e:
         return {"error": str(e)}

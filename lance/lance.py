@@ -8,6 +8,9 @@ from model.lance import Lance
 from model.leilao import StatusLeilao
 import uvicorn
 from threading import Thread, Lock
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
 
 app = FastAPI()
 
@@ -24,6 +27,12 @@ pub_channel = None
 # Conexão separada para consumo (usada pela thread consumidora)
 consumer_connection = None
 consumer_channel = None
+
+class LanceIn(BaseModel):
+    id_leilao: str
+    id_usuario: int | str
+    valor: float
+    ts: Optional[datetime] = None
 
 
 def init_publisher():
@@ -103,7 +112,7 @@ def publicar_evento(exchange, routing_key, evento):
 
 
 @app.post("/lance")
-def receber_lance(lance):
+def receber_lance(lance: LanceIn):  # <- typed as Pydantic model
     print(lance)
     sucesso, codigo, mensagem = callback_lance_realizado(lance)
     if not sucesso:
@@ -111,34 +120,34 @@ def receber_lance(lance):
     return {"status": "success", "message": mensagem}
 
 
-def callback_lance_realizado(lance: Lance):
+def callback_lance_realizado(lance: LanceIn):
     id_leilao = lance.id_leilao
     id_usuario = lance.id_usuario
     valor = lance.valor
 
     if id_leilao is None or id_usuario is None or valor is None:
         print("[LANCE] Lance inválido - dados incompletos")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance.to_dict())
+        publicar_evento("lance_invalidado", "lance_invalidado", lance.model_dump())
         return False, 400, "Lance inválido - dados incompletos"
 
     try:
         id_usuario = int(id_usuario)
         valor = float(valor)
-    except Exception as e:
+    except Exception:
         print("[LANCE] Lance inválido - tipagem incorreta")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance.to_dict())
+        publicar_evento("lance_invalidado", "lance_invalidado", lance.model_dump())
         return False, 400, "Lance inválido - tipagem incorreta"
-   
+
     status = leilao_status.get(id_leilao)
     if status != StatusLeilao.ATIVO.value:
         print("[LANCE] Lance inválido - leilão não ativo")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance.to_dict())
+        publicar_evento("lance_invalidado", "lance_invalidado", lance.model_dump())
         return False, 400, "Lance inválido - leilão não está ativo"
 
     ultimo_lance = leilao_vencedor.get(id_leilao) or (None, None)
     if ultimo_lance[1] is not None and valor <= ultimo_lance[1]:
         print("[LANCE] Lance inválido - valor muito baixo")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance.to_dict())
+        publicar_evento("lance_invalidado", "lance_invalidado", lance.model_dump())
         return False, 400, "Lance inválido - valor muito baixo"
 
     leilao_vencedor[id_leilao] = (id_usuario, valor)
@@ -147,9 +156,9 @@ def callback_lance_realizado(lance: Lance):
         "id_leilao": id_leilao,
         "id_usuario": id_usuario,
         "valor": valor,
-        "ts": lance.ts.isoformat(),
+        "ts": (lance.ts.isoformat() if lance.ts else None),
     }
-    
+
     if publicar_evento("lance_validado", "lance_validado", evento):
         print(f"[LANCE] Lance validado: Leilão {id_leilao}, Usuário {id_usuario}, Valor {valor}")
         return True, 200, "Lance validado com sucesso"

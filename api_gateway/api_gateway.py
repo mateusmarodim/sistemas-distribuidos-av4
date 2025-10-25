@@ -30,14 +30,14 @@ consumer_channel = None
 # Models
 class LeilaoCreate(BaseModel):
     descricao: str
-    inicio: datetime
-    fim: datetime
+    inicio: str
+    fim: str
 
 class LanceCreate(BaseModel):
     id_leilao: str
     id_usuario: str
     valor: float
-    ts: datetime
+    ts: str
 
 class InterestRegister(BaseModel):
     cliente_id: str
@@ -45,12 +45,12 @@ class InterestRegister(BaseModel):
 
 # Endpoints REST
 @app.post("/leilao")
-async def criar_leilao(leilao: Leilao):
+async def criar_leilao(leilao: LeilaoCreate):
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
                 f"{LEILAO_SERVICE_URL}/leilao", 
-                data=json.dumps(leilao.to_dict()).encode('utf-8')
+                json=leilao.model_dump()  # httpx serializa automaticamente
             )
             response.raise_for_status()
             return response.json()
@@ -68,17 +68,19 @@ async def consultar_leiloes_ativos():
             raise HTTPException(status_code=500, detail=f"Erro ao consultar leilões: {str(e)}")
 
 @app.post("/lance")
-async def efetuar_lance(lance: Lance):
+async def efetuar_lance(lance: LanceCreate):
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
                 f"{LANCE_SERVICE_URL}/lance", 
-                json=json.dumps(lance.to_dict())
+                json=lance.model_dump()
             )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
-            print(e)
+            print(f"Erro detalhado: {e}")
+            if hasattr(e, 'response'):
+                print(f"Response body: {e.response.text}")
             raise HTTPException(status_code=500, detail=f"Erro ao efetuar lance: {str(e)}")
 
 @app.post("/interesses")
@@ -91,7 +93,10 @@ async def registrar_interesse(interest: InterestRegister):
 @app.delete("/interesses/{cliente_id}/{leilao_id}")
 async def cancelar_interesse(cliente_id: str, leilao_id: str):
     if cliente_id in client_interests:
-        client_interests[cliente_id].discard(leilao_id)
+        try:
+            client_interests[cliente_id].remove(leilao_id)
+        except KeyError:
+            return {"error": "Interesse não encontrado"}, 404
     return {"message": "Interesse cancelado com sucesso"}
 
 # SSE Endpoint

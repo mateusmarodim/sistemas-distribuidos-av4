@@ -9,7 +9,7 @@ class StatusLeilao(Enum):
 
 @dataclass
 class Leilao:
-    id: int
+    id: int | None
     descricao: str
     inicio: datetime
     fim: datetime
