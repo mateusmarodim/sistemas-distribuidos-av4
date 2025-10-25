@@ -1,20 +1,3 @@
-# MS Lance (publisher e subscriber)
-# • Possui as chaves públicas de todos os clientes.
-# • (0,2) Escuta os eventos das filas lance_realizado, leilao_iniciado
-# e leilao_finalizado.
-# • (0,3) Recebe lances de usuários (ID do leilão; ID do usuário, valor
-# do lance) e checa a assinatura digital da mensagem utilizando a
-# chave pública correspondente. Somente aceitará o lance se:
-# o A assinatura for válida;
-# o ID do leilão existir e se o leilão estiver ativo;
-# o Se o lance for maior que o último lance registrado;
-# • (0,1) Se o lance for válido, o MS Lance publica o evento na fila
-# lance_validado.
-# • (0,2) Ao finalizar um leilão, deve publicar na fila leilao_vencedor,
-# informando o ID do leilão, o ID do vencedor do leilão e o valor
-# negociado. O vencedor é o que efetuou o maior lance válido até o
-# encerramento.
-
 import pika
 import os
 import sys
@@ -23,84 +6,139 @@ from pika.exchange_type import ExchangeType
 from fastapi import FastAPI
 from model.lance import Lance
 from model.leilao import StatusLeilao
+import uvicorn
+from threading import Thread, Lock
 
 app = FastAPI()
 
 leilao_status = {}
 leilao_vencedor = {}
 
-connection = pika.BlockingConnection(
-    pika.ConnectionParameters(host='localhost'))
-channel = connection.channel()
+# Lock para sincronizar acesso ao RabbitMQ de publicação
+rabbitmq_lock = Lock()
 
-channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout)
-channel.exchange_declare(exchange='leilao_finalizado', exchange_type=ExchangeType.direct, durable=True)
-channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
-channel.exchange_declare(exchange='lance_invalidado', exchange_type=ExchangeType.direct, durable=True)
-channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
+# Conexão separada para publicação (usada pela API FastAPI)
+pub_connection = None
+pub_channel = None
+
+# Conexão separada para consumo (usada pela thread consumidora)
+consumer_connection = None
+consumer_channel = None
 
 
+def init_publisher():
+    """Inicializa conexão e canal para publicação"""
+    global pub_connection, pub_channel
+    pub_connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+    pub_channel = pub_connection.channel()
+    
+    # Declarar exchanges para publicação
+    pub_channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
+    pub_channel.exchange_declare(exchange='lance_invalidado', exchange_type=ExchangeType.direct, durable=True)
+    pub_channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
 
-channel.queue_declare(queue='leilao_iniciado', durable=True)
-channel.queue_bind(exchange="leilao_iniciado", queue='leilao_iniciado', routing_key='leilao_iniciado')
-channel.queue_declare(queue='leilao_finalizado', durable=True)
-channel.queue_bind(exchange="leilao_finalizado", queue='leilao_finalizado', routing_key='leilao_finalizado')
 
-channel.queue_declare(queue='lance_validado', durable=True)
-channel.queue_bind(exchange='lance_validado', queue='lance_validado', routing_key='lance_validado')
-channel.queue_declare(queue='lance_invalidado', durable=True)
-channel.queue_bind(exchange='lance_invalidado', queue='lance_invalidado', routing_key='lance_invalidado')
-channel.queue_declare(queue='leilao_vencedor', durable=True)
-channel.queue_bind(exchange='leilao_vencedor', queue='leilao_vencedor', routing_key='leilao_vencedor')
+def init_consumer():
+    """Inicializa conexão e canal para consumo"""
+    global consumer_connection, consumer_channel
+    consumer_connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+    consumer_channel = consumer_connection.channel()
+    
+    # Declarar exchanges
+    consumer_channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout)
+    consumer_channel.exchange_declare(exchange='leilao_finalizado', exchange_type=ExchangeType.direct, durable=True)
+    consumer_channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
+    consumer_channel.exchange_declare(exchange='lance_invalidado', exchange_type=ExchangeType.direct, durable=True)
+    consumer_channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
+    
+    # Declarar e fazer bind das filas
+    consumer_channel.queue_declare(queue='leilao_iniciado', durable=True)
+    consumer_channel.queue_bind(exchange="leilao_iniciado", queue='leilao_iniciado')
+    
+    consumer_channel.queue_declare(queue='leilao_finalizado', durable=True)
+    consumer_channel.queue_bind(exchange="leilao_finalizado", queue='leilao_finalizado', routing_key='leilao_finalizado')
+    
+    consumer_channel.queue_declare(queue='lance_validado', durable=True)
+    consumer_channel.queue_bind(exchange='lance_validado', queue='lance_validado', routing_key='lance_validado')
+    
+    consumer_channel.queue_declare(queue='lance_invalidado', durable=True)
+    consumer_channel.queue_bind(exchange='lance_invalidado', queue='lance_invalidado', routing_key='lance_invalidado')
+    
+    consumer_channel.queue_declare(queue='leilao_vencedor', durable=True)
+    consumer_channel.queue_bind(exchange='leilao_vencedor', queue='leilao_vencedor', routing_key='leilao_vencedor')
+
+
+def publicar_evento(exchange, routing_key, evento):
+    """Função thread-safe para publicar eventos no RabbitMQ"""
+    global pub_connection, pub_channel
+    with rabbitmq_lock:
+        try:
+            # Verifica se precisa reconectar
+            if pub_connection is None or pub_connection.is_closed or pub_channel is None or pub_channel.is_closed:
+                print("[LANCE] Reconectando publisher ao RabbitMQ...")
+                init_publisher()
+            
+            pub_channel.basic_publish(
+                exchange=exchange,
+                routing_key=routing_key,
+                body=json.dumps(evento).encode('utf-8'),
+                properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
+            )
+            return True
+        except Exception as e:
+            print(f"[LANCE] Erro ao publicar evento: {e}")
+            # Tentar reconectar
+            try:
+                init_publisher()
+                pub_channel.basic_publish(
+                    exchange=exchange,
+                    routing_key=routing_key,
+                    body=json.dumps(evento).encode('utf-8'),
+                    properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
+                )
+                return True
+            except Exception as e2:
+                print(f"[LANCE] Erro na segunda tentativa: {e2}")
+                return False
+
 
 @app.post("/lance")
-def receber_lance(lance: Lance):
-    status, message = callback_lance_realizado(channel, lance)
-    return {"status": status, "message": message}
+def receber_lance(lance):
+    print(lance)
+    sucesso, codigo, mensagem = callback_lance_realizado(lance)
+    if not sucesso:
+        return {"status": "error", "message": mensagem}, codigo
+    return {"status": "success", "message": mensagem}
 
 
-def callback_lance_realizado(ch, lance: Lance):
-
+def callback_lance_realizado(lance: Lance):
     id_leilao = lance.id_leilao
     id_usuario = lance.id_usuario
     valor = lance.valor
 
     if id_leilao is None or id_usuario is None or valor is None:
-        print(" [x] Lance inválido - dados incompletos")
-        ch.basic_publish(exchange="lance_invalidado",
-        routing_key="lance_invalidado",
-        body=lance.to_dict().encode("utf-8"),
-        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        print("[LANCE] Lance inválido - dados incompletos")
+        publicar_evento("lance_invalidado", "lance_invalidado", lance.to_dict())
         return False, 400, "Lance inválido - dados incompletos"
 
     try:
-        id_leilao  = int(id_leilao)
         id_usuario = int(id_usuario)
-        valor      = float(valor)
+        valor = float(valor)
     except Exception as e:
-        print(" [x] Lance inválido - tipagem incorreta")
-        ch.basic_publish(exchange="lance_invalidado",
-        routing_key="lance_invalidado",
-        body=lance.to_dict().encode("utf-8"),
-        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        print("[LANCE] Lance inválido - tipagem incorreta")
+        publicar_evento("lance_invalidado", "lance_invalidado", lance.to_dict())
         return False, 400, "Lance inválido - tipagem incorreta"
    
     status = leilao_status.get(id_leilao)
     if status != StatusLeilao.ATIVO.value:
-        print(" [x] Lance inválido - leilão não ativo")
-        ch.basic_publish(exchange="lance_invalidado",
-        routing_key="lance_invalidado",
-        body=lance.to_dict().encode("utf-8"),
-        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        print("[LANCE] Lance inválido - leilão não ativo")
+        publicar_evento("lance_invalidado", "lance_invalidado", lance.to_dict())
         return False, 400, "Lance inválido - leilão não está ativo"
 
     ultimo_lance = leilao_vencedor.get(id_leilao) or (None, None)
     if ultimo_lance[1] is not None and valor <= ultimo_lance[1]:
-        print(" [x] Lance inválido - valor muito baixo")
-        ch.basic_publish(exchange="lance_invalidado",
-        routing_key="lance_invalidado",
-        body=lance.to_dict().encode("utf-8"),
-        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"))
+        print("[LANCE] Lance inválido - valor muito baixo")
+        publicar_evento("lance_invalidado", "lance_invalidado", lance.to_dict())
         return False, 400, "Lance inválido - valor muito baixo"
 
     leilao_vencedor[id_leilao] = (id_usuario, valor)
@@ -109,14 +147,14 @@ def callback_lance_realizado(ch, lance: Lance):
         "id_leilao": id_leilao,
         "id_usuario": id_usuario,
         "valor": valor,
-        "ts": lance.get("ts"),
+        "ts": lance.ts.isoformat(),
     }
-    ch.basic_publish(
-        exchange="lance_validado",
-        routing_key="lance_validado",
-        body=json.dumps(evento).encode("utf-8"),
-        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
-    )
+    
+    if publicar_evento("lance_validado", "lance_validado", evento):
+        print(f"[LANCE] Lance validado: Leilão {id_leilao}, Usuário {id_usuario}, Valor {valor}")
+        return True, 200, "Lance validado com sucesso"
+    else:
+        return False, 500, "Erro ao publicar lance validado"
 
 
 def callback_leilao_iniciado(ch, method, props, body):
@@ -124,15 +162,15 @@ def callback_leilao_iniciado(ch, method, props, body):
         msg = json.loads(body.decode("utf-8"))
         id_leilao = msg.get("id")
         if id_leilao is None:
-            print(" [x] Leilão inexistente")
+            print("[LANCE] Leilão inexistente")
             ch.basic_ack(method.delivery_tag); 
             return
-        id_leilao = int(id_leilao)
         leilao_status[id_leilao] = StatusLeilao.ATIVO.value
         leilao_vencedor[id_leilao] = (None, None)
+        print(f"[LANCE] Leilão {id_leilao} iniciado")
         ch.basic_ack(method.delivery_tag)
     except Exception as e:
-        print(" [x] Erro leilao_iniciado:", e)
+        print(f"[LANCE] Erro leilao_iniciado: {e}")
         ch.basic_ack(method.delivery_tag)
 
 
@@ -142,12 +180,11 @@ def callback_leilao_finalizado(ch, method, props, body):
         id_leilao = msg.get("id")
 
         if id_leilao is None:
-            print(" [x] Invalid leilao_finalizado message")
+            print("[LANCE] Leilão inválido em leilao_finalizado")
             ch.basic_ack(method.delivery_tag); 
             return
         
-        id_leilao = int(id_leilao)
-        leilao_status[id_leilao] = "encerrado"
+        leilao_status[id_leilao] = StatusLeilao.ENCERRADO.value
 
         vencedor = leilao_vencedor.get(id_leilao) or (None, None)
         evento = {
@@ -155,19 +192,37 @@ def callback_leilao_finalizado(ch, method, props, body):
             "id_vencedor": vencedor[0],
             "valor": vencedor[1],
         }
-        ch.basic_publish(
-            exchange="leilao_vencedor",
-            routing_key="leilao_vencedor",
-            body=json.dumps(evento).encode("utf-8"),
-            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
-        )
+        
+        publicar_evento("leilao_vencedor", "leilao_vencedor", evento)
+        print(f"[LANCE] Leilão {id_leilao} finalizado - Vencedor: {vencedor[0]}, Valor: {vencedor[1]}")
         ch.basic_ack(method.delivery_tag)
 
     except Exception as e:
-        print(" [x] Erro leilao_finalizado:", e)
+        print(f"[LANCE] Erro leilao_finalizado: {e}")
         ch.basic_ack(method.delivery_tag)
 
-channel.basic_consume(queue='leilao_iniciado', on_message_callback=callback_leilao_iniciado, auto_ack=False)
-channel.basic_consume(queue='leilao_finalizado', on_message_callback=callback_leilao_finalizado, auto_ack=False)
 
-channel.start_consuming()
+def iniciar_consumidores():
+    """Inicia o consumidor RabbitMQ em uma thread separada"""
+    global consumer_channel
+    consumer_channel.basic_consume(queue='leilao_iniciado', on_message_callback=callback_leilao_iniciado, auto_ack=False)
+    consumer_channel.basic_consume(queue='leilao_finalizado', on_message_callback=callback_leilao_finalizado, auto_ack=False)
+    print("[LANCE] Consumidores iniciados")
+    consumer_channel.start_consuming()
+
+
+if __name__ == "__main__":
+    print("[LANCE] Microsserviço de Lance iniciado")
+    
+    # Inicializar conexão do publisher
+    init_publisher()
+    print("[LANCE] Publisher inicializado")
+    
+    # Inicializar conexão do consumer
+    init_consumer()
+    print("[LANCE] Consumer inicializado")
+    
+    # Iniciar consumidor em thread separada
+    consumidor_thread = Thread(target=iniciar_consumidores, daemon=True)
+    consumidor_thread.start()
+    uvicorn.run(app, host="0.0.0.0", port=8000)

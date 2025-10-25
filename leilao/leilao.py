@@ -15,27 +15,72 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pika.exchange_type import ExchangeType
+import uvicorn
 from model.leilao import Leilao, StatusLeilao
 from fastapi import FastAPI
 from uuid import uuid4
 
 app = FastAPI()
 
-
-
 leiloes = []
-
 timers_finalizacao = {}
 
-connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-channel = connection.channel()
+# Lock para sincronizar acesso ao RabbitMQ
+rabbitmq_lock = threading.Lock()
 
-channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout, durable=False)
-channel.exchange_declare(exchange='leilao_finalizado', exchange_type='direct', durable=True)
+# Conexão separada para publicação
+pub_connection = None
+pub_channel = None
+
+
+def init_publisher():
+    """Inicializa conexão e canal para publicação"""
+    global pub_connection, pub_channel
+    pub_connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+    pub_channel = pub_connection.channel()
+    
+    pub_channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout, durable=False)
+    pub_channel.exchange_declare(exchange='leilao_finalizado', exchange_type='direct', durable=True)
+
+
+def publicar_evento(exchange, routing_key, evento):
+    """Função thread-safe para publicar eventos no RabbitMQ"""
+    global pub_connection, pub_channel
+    with rabbitmq_lock:
+        try:
+            # Verifica se precisa reconectar
+            if pub_connection is None or pub_connection.is_closed or pub_channel is None or pub_channel.is_closed:
+                print(f"[LEILÃO] Reconectando ao RabbitMQ...")
+                init_publisher()
+            
+            pub_channel.basic_publish(
+                exchange=exchange,
+                routing_key=routing_key,
+                body=json.dumps(evento).encode('utf-8'),
+                properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
+            )
+            return True
+        except Exception as e:
+            print(f"[LEILÃO] Erro ao publicar evento: {e}")
+            # Tentar reconectar e publicar novamente
+            try:
+                init_publisher()
+                pub_channel.basic_publish(
+                    exchange=exchange,
+                    routing_key=routing_key,
+                    body=json.dumps(evento).encode('utf-8'),
+                    properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
+                )
+                return True
+            except Exception as e2:
+                print(f"[LEILÃO] Erro na segunda tentativa: {e2}")
+                return False
+
 
 @app.get("/leilao")
 def get_leiloes():
     return leiloes
+
 
 @app.post("/leilao")
 def criar_leilao(leilao: Leilao):
@@ -52,6 +97,7 @@ def criar_leilao(leilao: Leilao):
     agendar_leiloes()
     return {"message": "Leilão criado com sucesso"}
 
+
 def iniciar_leilao(leilao):
     """Inicia um leilão e publica evento leilao_iniciado"""
     leilao["status"] = StatusLeilao.ATIVO.value
@@ -64,14 +110,11 @@ def iniciar_leilao(leilao):
         "status": leilao["status"]
     }
     
-    channel.basic_publish(
-        exchange='leilao_iniciado',
-        routing_key='leilao_iniciado',
-        body=json.dumps(evento).encode('utf-8'),
-        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
-    )
-    
-    print(f"[LEILÃO] Iniciado leilão {leilao['id']}: {leilao['descricao']}")
+    if publicar_evento('leilao_iniciado', 'leilao_iniciado', evento):
+        print(f"[LEILÃO] Iniciado leilão {leilao['id']}: {leilao['descricao']}")
+    else:
+        print(f"[LEILÃO] ERRO ao iniciar leilão {leilao['id']}")
+
 
 def finalizar_leilao(leilao):
     """Finaliza um leilão e publica evento leilao_finalizado"""
@@ -81,23 +124,24 @@ def finalizar_leilao(leilao):
         "id": leilao["id"]
     }
     
-    channel.basic_publish(
-        exchange='leilao_finalizado',
-        routing_key='leilao_finalizado',
-        body=json.dumps(evento).encode('utf-8'),
-        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
-    )
-    
-    print(f"[LEILÃO] Finalizado leilão {leilao['id']}: {leilao['descricao']}")
+    if publicar_evento('leilao_finalizado', 'leilao_finalizado', evento):
+        print(f"[LEILÃO] Finalizado leilão {leilao['id']}: {leilao['descricao']}")
+    else:
+        print(f"[LEILÃO] ERRO ao finalizar leilão {leilao['id']}")
+
 
 def agendar_leiloes():
     """Agenda o início de todos os leilões"""
     agora = datetime.now()
     
     for leilao in leiloes:
+        # Verifica se já foi agendado
+        if leilao["id"] in timers_finalizacao:
+            continue
+            
         tempo_para_inicio = (leilao["inicio"] - agora).total_seconds()
-        
         tempo_para_fim = (leilao["fim"] - agora).total_seconds()
+        
         if tempo_para_fim > 0:
             timer_fim = threading.Timer(tempo_para_fim, finalizar_leilao, args=[leilao])
             timer_fim.start()
@@ -112,22 +156,28 @@ def agendar_leiloes():
             print(f"[LEILÃO] Iniciando leilão {leilao['id']} imediatamente")
             iniciar_leilao(leilao)
 
+
+@app.on_event("startup")
+async def startup_event():
+    """Inicializa publisher quando a aplicação inicia"""
+    print("[LEILÃO] Inicializando publisher...")
+    init_publisher()
+    print("[LEILÃO] Publisher inicializado")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Fecha conexões quando a aplicação encerra"""
+    print("\n[LEILÃO] Parando microsserviço...")
+    for timer in timers_finalizacao.values():
+        if timer.is_alive():
+            timer.cancel()
+    with rabbitmq_lock:
+        if pub_connection and not pub_connection.is_closed:
+            pub_connection.close()
+    print("[LEILÃO] Microsserviço parado")
+
+
 if __name__ == "__main__":
     print("[LEILÃO] Microsserviço de Leilão iniciado")
-    print(f"[LEILÃO] {len(leiloes)} leilões configurados")
-    
-    try:
-        agendar_leiloes()
-        
-        print("[LEILÃO] Pressione Ctrl+C para parar")
-        while True:
-            time.sleep(30)
-            print(f"[LEILÃO] Status: {[(l['id'], l['status']) for l in leiloes]}")
-            
-    except KeyboardInterrupt:
-        print("\n[LEILÃO] Parando microsserviço...")
-        for timer in timers_finalizacao.values():
-            if timer.is_alive():
-                timer.cancel()
-        connection.close()
-        print("[LEILÃO] Microsserviço parado")
+    uvicorn.run(app, host="0.0.0.0", port=8001)

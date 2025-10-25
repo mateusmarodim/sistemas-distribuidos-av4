@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from datetime import datetime
 
 @dataclass
 class Lance:
-    id_leilao: int
+    id_leilao: str
     id_usuario: int
     valor: float
+    ts: datetime
 
     @classmethod
     def from_dict(cls, data: dict):
