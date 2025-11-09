@@ -16,8 +16,10 @@ from model.lance import Lance
 app = FastAPI(title="API Gateway")
 
 # Configurações dos microsserviços
+PAGAMENTO_SERVICE_URL = "http://localhost:8002"
 LEILAO_SERVICE_URL = "http://localhost:8001"
 LANCE_SERVICE_URL = "http://localhost:8000"
+
 
 # Gerenciamento de clientes SSE
 sse_clients: Dict[str, asyncio.Queue] = {}
@@ -151,21 +153,16 @@ def init_consumer():
     consumer_channel.exchange_declare(exchange='link_pagamento', exchange_type=ExchangeType.direct, durable=True)
     consumer_channel.exchange_declare(exchange='status_pagamento', exchange_type=ExchangeType.direct, durable=True)
     
-    # Declarar filas com os mesmos parâmetros dos outros microsserviços
-    events = {
-        'lance_validado': 'lance_validado',
-        'lance_invalidado': 'lance_invalidado',
-        'leilao_vencedor': 'leilao_vencedor',
-        'link_pagamento': 'link_pagamento',
-        'status_pagamento': 'status_pagamento'
-    }
+    events = ['lance_validado', 'lance_invalidado', 'leilao_vencedor', 
+              'link_pagamento', 'status_pagamento']
     
-    for queue_name, routing_key in events.items():
-        consumer_channel.queue_declare(queue=queue_name, durable=True)
+    for event in events:
+        queue = consumer_channel.queue_declare(queue='', durable=True, exclusive=True)
+        queue_name = queue.method.queue
         consumer_channel.queue_bind(
-            exchange=queue_name,
+            exchange=event,
             queue=queue_name,
-            routing_key=routing_key
+            routing_key=event
         )
 
 def consume_rabbitmq_events():

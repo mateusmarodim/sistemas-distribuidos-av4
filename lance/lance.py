@@ -56,9 +56,6 @@ def init_consumer():
     # Declarar exchanges
     consumer_channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout)
     consumer_channel.exchange_declare(exchange='leilao_finalizado', exchange_type=ExchangeType.direct, durable=True)
-    consumer_channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
-    consumer_channel.exchange_declare(exchange='lance_invalidado', exchange_type=ExchangeType.direct, durable=True)
-    consumer_channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
     
     # Declarar e fazer bind das filas
     consumer_channel.queue_declare(queue='leilao_iniciado', durable=True)
@@ -66,15 +63,6 @@ def init_consumer():
     
     consumer_channel.queue_declare(queue='leilao_finalizado', durable=True)
     consumer_channel.queue_bind(exchange="leilao_finalizado", queue='leilao_finalizado', routing_key='leilao_finalizado')
-    
-    consumer_channel.queue_declare(queue='lance_validado', durable=True)
-    consumer_channel.queue_bind(exchange='lance_validado', queue='lance_validado', routing_key='lance_validado')
-    
-    consumer_channel.queue_declare(queue='lance_invalidado', durable=True)
-    consumer_channel.queue_bind(exchange='lance_invalidado', queue='lance_invalidado', routing_key='lance_invalidado')
-    
-    consumer_channel.queue_declare(queue='leilao_vencedor', durable=True)
-    consumer_channel.queue_bind(exchange='leilao_vencedor', queue='leilao_vencedor', routing_key='leilao_vencedor')
 
 
 def publicar_evento(exchange, routing_key, evento):
