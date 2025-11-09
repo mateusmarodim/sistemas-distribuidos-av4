@@ -146,8 +146,10 @@ def callback_lance_realizado(lance: LanceIn):
 
     ultimo_lance = leilao_vencedor.get(id_leilao) or (None, None)
     if ultimo_lance[1] is not None and valor <= ultimo_lance[1]:
+        lance_dump = lance.model_dump()
+        lance_dump['ts'] = lance.ts.isoformat() if lance.ts else None
         print("[LANCE] Lance inválido - valor muito baixo")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance.model_dump())
+        publicar_evento("lance_invalidado", "lance_invalidado", lance_dump)
         return False, 400, "Lance inválido - valor muito baixo"
 
     leilao_vencedor[id_leilao] = (id_usuario, valor)

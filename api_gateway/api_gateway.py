@@ -21,7 +21,7 @@ LANCE_SERVICE_URL = "http://localhost:8000"
 
 # Gerenciamento de clientes SSE
 sse_clients: Dict[str, asyncio.Queue] = {}
-client_interests: Dict[str, Set[str]] = {}  # client_id -> set of auction_ids
+client_interests: Dict[str, Set[str]] = {}
 
 # Conexão RabbitMQ
 consumer_connection = None
@@ -83,6 +83,10 @@ async def efetuar_lance(lance: LanceCreate):
                 print(f"Response body: {e.response.text}")
             raise HTTPException(status_code=500, detail=f"Erro ao efetuar lance: {str(e)}")
 
+@app.get("/interesses")
+async def obter_interesses():
+    return client_interests
+
 @app.post("/interesses")
 async def registrar_interesse(interest: InterestRegister):
     if interest.cliente_id not in client_interests:
@@ -111,6 +115,10 @@ async def sse_stream(cliente_id: str):
             yield f"data: {json.dumps({'type': 'connected', 'message': 'Conectado ao stream de eventos'})}\n\n"
             
             while True:
+                if cliente_id not in client_interests or cliente_id not in sse_clients:
+                    del client_interests[cliente_id]
+                    del sse_clients[cliente_id]
+                    break
                 event = await queue.get()
                 yield f"data: {json.dumps(event)}\n\n"
         except asyncio.CancelledError:
