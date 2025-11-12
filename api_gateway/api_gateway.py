@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Set
 import httpx
@@ -14,6 +15,14 @@ from model.leilao import Leilao
 from model.lance import Lance
 
 app = FastAPI(title="API Gateway")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configurações dos microsserviços
 PAGAMENTO_SERVICE_URL = "http://localhost:8002"
@@ -105,7 +114,6 @@ async def cancelar_interesse(cliente_id: str, leilao_id: str):
             return {"error": "Interesse não encontrado"}, 404
     return {"message": "Interesse cancelado com sucesso"}
 
-# SSE Endpoint
 @app.get("/eventos/{cliente_id}")
 async def sse_stream(cliente_id: str):
     queue = asyncio.Queue()
@@ -146,7 +154,7 @@ def init_consumer():
     consumer_connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
     consumer_channel = consumer_connection.channel()
     
-    # Declarar exchanges (devem existir)
+    # Declarar exchanges como direct
     consumer_channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
     consumer_channel.exchange_declare(exchange='lance_invalidado', exchange_type=ExchangeType.direct, durable=True)
     consumer_channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
@@ -157,12 +165,15 @@ def init_consumer():
               'link_pagamento', 'status_pagamento']
     
     for event in events:
-        queue = consumer_channel.queue_declare(queue='', durable=True, exclusive=True)
-        queue_name = queue.method.queue
+        # Declare anonymous queue
+        result = consumer_channel.queue_declare(queue='', exclusive=True)
+        queue_name = result.method.queue
+        
+        # Bind queue to exchange with routing key
         consumer_channel.queue_bind(
             exchange=event,
             queue=queue_name,
-            routing_key=event
+            routing_key=event  # Use event name as routing key
         )
 
 def consume_rabbitmq_events():
@@ -170,31 +181,28 @@ def consume_rabbitmq_events():
     global consumer_channel
     
     def callback(ch, method, properties, body):
-        try:
-            event_data = json.loads(body.decode('utf-8'))
-            event_type = method.routing_key
-            
-            print(f"[API GATEWAY] Evento recebido: {event_type} - {event_data}")
-            
-            # Processar evento de forma assíncrona
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(process_event(event_type, event_data))
-            loop.close()
-            
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-        except Exception as e:
-            print(f"[API GATEWAY] Erro ao processar evento: {e}")
-            ch.basic_ack(delivery_tag=method.delivery_tag)
+        event_type = method.routing_key  # Get event type from routing key
+        event_data = json.loads(body.decode())
+        print(f"[API GATEWAY] Evento recebido: {event_type} - {event_data}")
+        asyncio.create_task(process_event(event_type, event_data))
+        ch.basic_ack(delivery_tag=method.delivery_tag)
     
-    # Configurar consumidores para todas as filas
     events = ['lance_validado', 'lance_invalidado', 'leilao_vencedor', 
               'link_pagamento', 'status_pagamento']
     
     for event in events:
+        # Declare and bind anonymous queue
+        result = consumer_channel.queue_declare(queue='', exclusive=True)
+        queue_name = result.method.queue
+        consumer_channel.queue_bind(
+            exchange=event, 
+            queue=queue_name,
+            routing_key=event
+        )
+        
         consumer_channel.basic_consume(
-            queue=event, 
-            on_message_callback=callback, 
+            queue=queue_name,
+            on_message_callback=callback,
             auto_ack=False
         )
     
