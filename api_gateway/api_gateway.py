@@ -224,7 +224,7 @@ async def process_event(event_type: str, event_data: dict):
             should_notify = False
             
             if event_type in ['lance_invalidado', 'link_pagamento', 'status_pagamento']:
-                should_notify = (str(client_id) == str(usuario_id))
+                should_notify = (client_id in client_interests.keys() and leilao_id in client_interests[client_id] and str(client_id) == str(usuario_id))
             elif event_type in ['lance_validado', 'leilao_vencedor']:
                 should_notify = (client_id in client_interests.keys() and 
                                leilao_id in client_interests[client_id])

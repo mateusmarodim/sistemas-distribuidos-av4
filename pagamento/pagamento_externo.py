@@ -80,7 +80,6 @@ def enviar_callback(callback_url, id_pagamento, aprovado):
     try:
         response = requests.post(callback_url, json={
             'id_pagamento': id_pagamento,
-            'aprovado': aprovado,
             'status': 'aprovado' if aprovado else 'reprovado'
         })
         print(f"Callback enviado: {response.status_code}")

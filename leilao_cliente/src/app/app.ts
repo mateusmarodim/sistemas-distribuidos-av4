@@ -139,5 +139,22 @@ export class App{
     });     
     alert(`Pagamento realizado com sucesso para a URL: ${this.paymentURL}`);
   }
+  
+  removerInteresse(leilaoId: number) {
+    this.httpService.removerInteresseEndpoint({
+      userId: this.userId,
+      leilaoId: leilaoId
+    }).subscribe({
+      next: (response) => {
+        this.interestedAuctions = this.interestedAuctions.filter(id => id !== leilaoId);
+        console.log('Interesse no leilão removido com sucesso:', response);
+        alert('Interesse no leilão removido com sucesso!');
+      },
+      error: (error) => {
+        console.error('Erro ao remover interesse no leilão:', error);
+        alert('Erro ao remover interesse no leilão. Por favor, tente novamente.');
+      }
+    });
+  }
 
 }

@@ -42,7 +42,6 @@
                             <th>Data de Início</th>
                             <th>Data de Fim</th>
                             <th>Status</th>
-                            <th>Vencedor</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -53,7 +52,6 @@
                                 <td>{{ auction.inicio }}</td>
                                 <td>{{ auction.fim }}</td>
                                 <td>{{ auction.status }}</td>
-                                <td>{{ auction.vencedor }}</td>
                             </tr>
                         }
                     </tbody>
@@ -70,7 +68,7 @@
                             <th>Data de Início</th>
                             <th>Data de Fim</th>
                             <th>Status</th>
-                            <th>Vencedor</th>
+                            <th>Remover</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -82,7 +80,7 @@
                                     <td>{{ auction.inicio }}</td>
                                     <td>{{ auction.fim }}</td>
                                     <td>{{ auction.status }}</td>
-                                    <td>{{ auction.vencedor }}</td>
+                                    <td><button (click)="removerInteresse(auction.id)">X</button></td>
                                 </tr>
                             }
                         }
