@@ -1,0 +1,99 @@
+<div>
+    <h1>Sistema de leilão</h1>
+    <section id="mainSection">
+        <section id="leftSection">
+            <form id="userForm">
+                <label for="userId">ID do Usuário:</label>
+                <input type="text" id="userId" name="userId" [(ngModel)]="userId"/>
+            </form>
+            <form id="createAuctionForm" [formGroup]="createAuctionForm">
+                <h2>Criar Leilão</h2>
+                <label for="descricao">Descrição:</label>
+                <input type="text" id="descricao" name="descricao" required  formControlName="descricao"/>
+                <label for="inicio">Data de Início:</label>
+                <input type="datetime-local" id="inicio" name="inicio" required formControlName="inicio" />
+                <label for="fim">Data de Fim:</label>
+                <input type="datetime-local" id="fim" name="fim" required formControlName="fim" />
+                <button (click)="criarLeilao()">Criar Leilão</button>
+            </form>
+            <form id="placeBidForm" [formGroup]="placeBidForm">
+                <h2>Publicar Lance</h2>
+                <label for="idLeilao">ID do Leilão:</label>
+                <select id="idLeilao" name="idLeilao" formControlName="id_leilao">
+                        @for (auction of auctionList; track auction.id) {
+                            <option [value]="auction.id">
+                                {{ auction.id }} - {{ auction.descricao }}
+                            </option>
+                        }
+                </select>
+                <label for="valor">Valor do Lance:</label>
+                <input type="number" id="valor" name="valor" required formControlName="valor"/>
+                <button (click)="publicarLance()">PUBLICAR</button>
+            </form>
+        </section>
+        <section id="rightSection">
+            <div>
+                <h2>Leilões Ativos</h2>
+                <table id="activeAuctionsTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Descrição</th>
+                            <th>Data de Início</th>
+                            <th>Data de Fim</th>
+                            <th>Status</th>
+                            <th>Vencedor</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (auction of auctionList; track auction.id) {
+                            <tr>
+                                <td>{{ auction.id }}</td>
+                                <td>{{ auction.descricao }}</td>
+                                <td>{{ auction.inicio }}</td>
+                                <td>{{ auction.fim }}</td>
+                                <td>{{ auction.status }}</td>
+                                <td>{{ auction.vencedor }}</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                <button id="refreshAuctionsBtn" (click)="listarLeiloes()">ATUALIZAR</button>
+            </div>
+            <div>
+                <h2>Leilões Inscritos</h2>
+                <table id="interestedAuctionsList">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Descrição</th>
+                            <th>Data de Início</th>
+                            <th>Data de Fim</th>
+                            <th>Status</th>
+                            <th>Vencedor</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (auction of auctionList; track auction.id) {
+                            @if (interestedAuctions.includes(auction.id)) {
+                                <tr>
+                                    <td>{{ auction.id }}</td>
+                                    <td>{{ auction.descricao }}</td>
+                                    <td>{{ auction.inicio }}</td>
+                                    <td>{{ auction.fim }}</td>
+                                    <td>{{ auction.status }}</td>
+                                    <td>{{ auction.vencedor }}</td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div>
+                <h2>Pagamento</h2>
+                <input type="url" id="paymentUrl" name="paymentUrl" [(ngModel)]="paymentURL" placeholder="URL de Pagamento"/>
+                <button (click)="realizarPagamento()">REALIZAR PAGAMENTO</button>
+            </div>
+        </section>
+    </section>
+</div>

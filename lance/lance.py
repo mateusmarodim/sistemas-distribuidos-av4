@@ -17,20 +17,17 @@ app = FastAPI()
 leilao_status = {}
 leilao_vencedor = {}
 
-# Lock para sincronizar acesso ao RabbitMQ de publicação
 rabbitmq_lock = Lock()
 
-# Conexão separada para publicação (usada pela API FastAPI)
 pub_connection = None
 pub_channel = None
 
-# Conexão separada para consumo (usada pela thread consumidora)
 consumer_connection = None
 consumer_channel = None
 
 class LanceIn(BaseModel):
     id_leilao: str
-    id_usuario: int | str
+    id_usuario: str
     valor: float
     ts: Optional[datetime] = None
 
@@ -38,10 +35,26 @@ class LanceIn(BaseModel):
 def init_publisher():
     """Inicializa conexão e canal para publicação"""
     global pub_connection, pub_channel
-    pub_connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+    
+    # Close existing connections if any
+    try:
+        if pub_channel and pub_channel.is_open:
+            pub_channel.close()
+        if pub_connection and pub_connection.is_open:
+            pub_connection.close()
+    except:
+        pass
+    
+    # Create new connection with heartbeat
+    pub_connection = pika.BlockingConnection(
+        pika.ConnectionParameters(
+            host='localhost',
+            heartbeat=600,
+            blocked_connection_timeout=300
+        )
+    )
     pub_channel = pub_connection.channel()
     
-    # Declarar exchanges para publicação
     pub_channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
     pub_channel.exchange_declare(exchange='lance_invalidado', exchange_type=ExchangeType.direct, durable=True)
     pub_channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
@@ -50,14 +63,20 @@ def init_publisher():
 def init_consumer():
     """Inicializa conexão e canal para consumo"""
     global consumer_connection, consumer_channel
-    consumer_connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+    
+    # Create connection with heartbeat
+    consumer_connection = pika.BlockingConnection(
+        pika.ConnectionParameters(
+            host='localhost',
+            heartbeat=600,
+            blocked_connection_timeout=300
+        )
+    )
     consumer_channel = consumer_connection.channel()
     
-    # Declarar exchanges
     consumer_channel.exchange_declare(exchange='leilao_iniciado', exchange_type=ExchangeType.fanout)
     consumer_channel.exchange_declare(exchange='leilao_finalizado', exchange_type=ExchangeType.direct, durable=True)
     
-    # Declarar e fazer bind das filas
     consumer_channel.queue_declare(queue='leilao_iniciado', durable=True)
     consumer_channel.queue_bind(exchange="leilao_iniciado", queue='leilao_iniciado')
     
@@ -70,7 +89,6 @@ def publicar_evento(exchange, routing_key, evento):
     global pub_connection, pub_channel
     with rabbitmq_lock:
         try:
-            # Verifica se precisa reconectar
             if pub_connection is None or pub_connection.is_closed or pub_channel is None or pub_channel.is_closed:
                 print("[LANCE] Reconectando publisher ao RabbitMQ...")
                 init_publisher()
@@ -84,7 +102,6 @@ def publicar_evento(exchange, routing_key, evento):
             return True
         except Exception as e:
             print(f"[LANCE] Erro ao publicar evento: {e}")
-            # Tentar reconectar
             try:
                 init_publisher()
                 pub_channel.basic_publish(
@@ -100,7 +117,7 @@ def publicar_evento(exchange, routing_key, evento):
 
 
 @app.post("/lance")
-def receber_lance(lance: LanceIn):  # <- typed as Pydantic model
+def receber_lance(lance: LanceIn): 
     print(lance)
     sucesso, codigo, mensagem = callback_lance_realizado(lance)
     if not sucesso:
@@ -115,21 +132,38 @@ def callback_lance_realizado(lance: LanceIn):
 
     if id_leilao is None or id_usuario is None or valor is None:
         print("[LANCE] Lance inválido - dados incompletos")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance.model_dump())
+        lance_dump = {
+            "id_leilao": lance.id_leilao,
+            "id_usuario": lance.id_usuario,
+            "valor": lance.valor,
+            "ts": lance.ts.isoformat() if lance.ts else None
+        }
+        publicar_evento("lance_invalidado", "lance_invalidado", {"type": "lance_invalidado", "data": lance_dump})
         return False, 400, "Lance inválido - dados incompletos"
 
     try:
-        id_usuario = int(id_usuario)
         valor = float(valor)
     except Exception:
         print("[LANCE] Lance inválido - tipagem incorreta")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance.model_dump())
+        lance_dump = {
+            "id_leilao": lance.id_leilao,
+            "id_usuario": lance.id_usuario,
+            "valor": lance.valor,
+            "ts": lance.ts.isoformat() if lance.ts else None
+        }
+        publicar_evento("lance_invalidado", "lance_invalidado", {"type": "lance_invalidado", "data": lance_dump})
         return False, 400, "Lance inválido - tipagem incorreta"
 
     status = leilao_status.get(id_leilao)
     if status != StatusLeilao.ATIVO.value:
         print("[LANCE] Lance inválido - leilão não ativo")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance.model_dump())
+        lance_dump = {
+            "id_leilao": lance.id_leilao,
+            "id_usuario": lance.id_usuario,
+            "valor": lance.valor,
+            "ts": lance.ts.isoformat() if lance.ts else None
+        }
+        publicar_evento("lance_invalidado", "lance_invalidado", {"type": "lance_invalidado", "data": lance_dump})
         return False, 400, "Lance inválido - leilão não está ativo"
 
     ultimo_lance = leilao_vencedor.get(id_leilao) or (None, None)
@@ -137,7 +171,7 @@ def callback_lance_realizado(lance: LanceIn):
         lance_dump = lance.model_dump()
         lance_dump['ts'] = lance.ts.isoformat() if lance.ts else None
         print("[LANCE] Lance inválido - valor muito baixo")
-        publicar_evento("lance_invalidado", "lance_invalidado", lance_dump)
+        publicar_evento("lance_invalidado", "lance_invalidado", {"type": "lance_invalidado", "data": lance_dump})
         return False, 400, "Lance inválido - valor muito baixo"
 
     leilao_vencedor[id_leilao] = (id_usuario, valor)
@@ -149,7 +183,7 @@ def callback_lance_realizado(lance: LanceIn):
         "ts": (lance.ts.isoformat() if lance.ts else None),
     }
 
-    if publicar_evento("lance_validado", "lance_validado", evento):
+    if publicar_evento("lance_validado", "lance_validado", {"type": "lance_validado", "data": evento}):
         print(f"[LANCE] Lance validado: Leilão {id_leilao}, Usuário {id_usuario}, Valor {valor}")
         return True, 200, "Lance validado com sucesso"
     else:
@@ -191,8 +225,8 @@ def callback_leilao_finalizado(ch, method, props, body):
             "id_vencedor": vencedor[0],
             "valor": vencedor[1],
         }
-        
-        publicar_evento("leilao_vencedor", "leilao_vencedor", evento)
+
+        publicar_evento("leilao_vencedor", "leilao_vencedor", {"type": "leilao_vencedor", "data": evento})
         print(f"[LANCE] Leilão {id_leilao} finalizado - Vencedor: {vencedor[0]}, Valor: {vencedor[1]}")
         ch.basic_ack(method.delivery_tag)
 
@@ -213,15 +247,12 @@ def iniciar_consumidores():
 if __name__ == "__main__":
     print("[LANCE] Microsserviço de Lance iniciado")
     
-    # Inicializar conexão do publisher
     init_publisher()
     print("[LANCE] Publisher inicializado")
     
-    # Inicializar conexão do consumer
     init_consumer()
     print("[LANCE] Consumer inicializado")
     
-    # Iniciar consumidor em thread separada
     consumidor_thread = Thread(target=iniciar_consumidores, daemon=True)
     consumidor_thread.start()
     uvicorn.run(app, host="0.0.0.0", port=8000)

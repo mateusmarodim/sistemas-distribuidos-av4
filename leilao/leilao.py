@@ -28,10 +28,8 @@ app = FastAPI()
 leiloes = []
 timers_finalizacao = {}
 
-# Lock para sincronizar acesso ao RabbitMQ
 rabbitmq_lock = threading.Lock()
 
-# Conexão separada para publicação
 pub_connection = None
 pub_channel = None
 
@@ -51,7 +49,6 @@ def publicar_evento(exchange, routing_key, evento):
     global pub_connection, pub_channel
     with rabbitmq_lock:
         try:
-            # Verifica se precisa reconectar
             if pub_connection is None or pub_connection.is_closed or pub_channel is None or pub_channel.is_closed:
                 print(f"[LEILÃO] Reconectando ao RabbitMQ...")
                 init_publisher()
@@ -65,7 +62,6 @@ def publicar_evento(exchange, routing_key, evento):
             return True
         except Exception as e:
             print(f"[LEILÃO] Erro ao publicar evento: {e}")
-            # Tentar reconectar e publicar novamente
             try:
                 init_publisher()
                 pub_channel.basic_publish(
@@ -89,7 +85,6 @@ class LeilaoCreate(BaseModel):
     descricao: str
     inicio: datetime
     fim: datetime
-    # status will be set internally, do not require on input
 
 @app.post("/leilao")
 def criar_leilao(leilao: LeilaoCreate):
@@ -144,12 +139,15 @@ def agendar_leiloes():
     agora = datetime.now()
     
     for leilao in leiloes:
-        # Verifica se já foi agendado
         if leilao["id"] in timers_finalizacao:
             continue
+        
+        # Ensure both datetimes are naive (remove timezone info if present)
+        inicio = leilao["inicio"].replace(tzinfo=None) if leilao["inicio"].tzinfo else leilao["inicio"]
+        fim = leilao["fim"].replace(tzinfo=None) if leilao["fim"].tzinfo else leilao["fim"]
             
-        tempo_para_inicio = (leilao["inicio"] - agora).total_seconds()
-        tempo_para_fim = (leilao["fim"] - agora).total_seconds()
+        tempo_para_inicio = (inicio - agora).total_seconds()
+        tempo_para_fim = (fim - agora).total_seconds()
         
         if tempo_para_fim > 0:
             timer_fim = threading.Timer(tempo_para_fim, finalizar_leilao, args=[leilao])

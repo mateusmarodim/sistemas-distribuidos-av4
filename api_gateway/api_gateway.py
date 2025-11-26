@@ -24,21 +24,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configurações dos microsserviços
 PAGAMENTO_SERVICE_URL = "http://localhost:8002"
 LEILAO_SERVICE_URL = "http://localhost:8001"
 LANCE_SERVICE_URL = "http://localhost:8000"
 
 
-# Gerenciamento de clientes SSE
 sse_clients: Dict[str, asyncio.Queue] = {}
 client_interests: Dict[str, Set[str]] = {}
 
-# Conexão RabbitMQ
 consumer_connection = None
 consumer_channel = None
 
-# Models
 class LeilaoCreate(BaseModel):
     descricao: str
     inicio: str
@@ -54,18 +50,21 @@ class InterestRegister(BaseModel):
     cliente_id: str
     leilao_id: str
 
-# Endpoints REST
 @app.post("/leilao")
 async def criar_leilao(leilao: LeilaoCreate):
     async with httpx.AsyncClient() as client:
+        print(leilao)
         try:
             response = await client.post(
                 f"{LEILAO_SERVICE_URL}/leilao", 
-                json=leilao.model_dump()  # httpx serializa automaticamente
+                json=leilao.model_dump() 
             )
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
+            print(f"Erro detalhado: {e}")
+            if hasattr(e, 'response'):
+                print(f"Response body: {e.response.text}")
             raise HTTPException(status_code=500, detail=f"Erro ao criar leilão: {str(e)}")
 
 @app.get("/leilao")
@@ -100,10 +99,15 @@ async def obter_interesses():
 
 @app.post("/interesses")
 async def registrar_interesse(interest: InterestRegister):
-    if interest.cliente_id not in client_interests:
-        client_interests[interest.cliente_id] = set()
-    client_interests[interest.cliente_id].add(interest.leilao_id)
-    return {"message": "Interesse registrado com sucesso"}
+    try:
+        if interest.cliente_id not in client_interests:
+            client_interests[interest.cliente_id] = set()
+        client_interests[interest.cliente_id].add(interest.leilao_id)
+        print(client_interests)
+        return {"message": "Interesse registrado com sucesso"}
+    except Exception as e:
+        print(f"Erro ao registrar interesse: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao registrar interesse")
 
 @app.delete("/interesses/{cliente_id}/{leilao_id}")
 async def cancelar_interesse(cliente_id: str, leilao_id: str):
@@ -121,15 +125,15 @@ async def sse_stream(cliente_id: str):
     
     async def event_generator():
         try:
-            # Enviar evento de conexão estabelecida
             yield f"data: {json.dumps({'type': 'connected', 'message': 'Conectado ao stream de eventos'})}\n\n"
             
             while True:
+                event = await queue.get()
+                print(f"Evento: {event}")
                 if cliente_id not in client_interests or cliente_id not in sse_clients:
                     del client_interests[cliente_id]
                     del sse_clients[cliente_id]
                     break
-                event = await queue.get()
                 yield f"data: {json.dumps(event)}\n\n"
         except asyncio.CancelledError:
             if cliente_id in sse_clients:
@@ -147,14 +151,11 @@ async def sse_stream(cliente_id: str):
         }
     )
 
-# RabbitMQ Consumer
 def init_consumer():
-    """Inicializa conexão e canal para consumo"""
     global consumer_connection, consumer_channel
     consumer_connection = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
     consumer_channel = consumer_connection.channel()
     
-    # Declarar exchanges como direct
     consumer_channel.exchange_declare(exchange='lance_validado', exchange_type=ExchangeType.direct, durable=True)
     consumer_channel.exchange_declare(exchange='lance_invalidado', exchange_type=ExchangeType.direct, durable=True)
     consumer_channel.exchange_declare(exchange='leilao_vencedor', exchange_type=ExchangeType.direct, durable=True)
@@ -165,33 +166,36 @@ def init_consumer():
               'link_pagamento', 'status_pagamento']
     
     for event in events:
-        # Declare anonymous queue
         result = consumer_channel.queue_declare(queue='', exclusive=True)
         queue_name = result.method.queue
         
-        # Bind queue to exchange with routing key
         consumer_channel.queue_bind(
             exchange=event,
             queue=queue_name,
-            routing_key=event  # Use event name as routing key
+            routing_key=event  
         )
 
 def consume_rabbitmq_events():
-    """Consome eventos do RabbitMQ e notifica clientes SSE"""
     global consumer_channel
     
     def callback(ch, method, properties, body):
-        event_type = method.routing_key  # Get event type from routing key
+        event_type = method.routing_key  
         event_data = json.loads(body.decode())
         print(f"[API GATEWAY] Evento recebido: {event_type} - {event_data}")
-        asyncio.create_task(process_event(event_type, event_data))
+        
+        # Schedule coroutine in the event loop running in the main thread
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(process_event(event_type, event_data['data']))
+        finally:
+            loop.close()
+        
         ch.basic_ack(delivery_tag=method.delivery_tag)
     
     events = ['lance_validado', 'lance_invalidado', 'leilao_vencedor', 
               'link_pagamento', 'status_pagamento']
     
     for event in events:
-        # Declare and bind anonymous queue
         result = consumer_channel.queue_declare(queue='', exclusive=True)
         queue_name = result.method.queue
         consumer_channel.queue_bind(
@@ -210,21 +214,19 @@ def consume_rabbitmq_events():
     consumer_channel.start_consuming()
 
 async def process_event(event_type: str, event_data: dict):
-    """Processa eventos e notifica clientes SSE interessados"""
+    print(f"[API GATEWAY] Processando evento {event_type} - {event_data}")
     for client_id, queue in list(sse_clients.items()):
+        print(f"[API GATEWAY] Processando para cliente {client_id}")
         try:
-            # Verificar se o cliente tem interesse no leilão
             leilao_id = event_data.get('id_leilao')
             usuario_id = event_data.get('id_usuario') or event_data.get('id_vencedor')
             
             should_notify = False
             
             if event_type in ['lance_invalidado', 'link_pagamento', 'status_pagamento']:
-                # Notificar apenas o usuário específico
                 should_notify = (str(client_id) == str(usuario_id))
             elif event_type in ['lance_validado', 'leilao_vencedor']:
-                # Notificar todos os interessados no leilão
-                should_notify = (client_id in client_interests and 
+                should_notify = (client_id in client_interests.keys() and 
                                leilao_id in client_interests[client_id])
             
             if should_notify:
@@ -234,23 +236,22 @@ async def process_event(event_type: str, event_data: dict):
                     "timestamp": datetime.now().isoformat()
                 })
                 print(f"[API GATEWAY] Evento {event_type} notificado para cliente {client_id}")
+            else:
+                print(f"[API GATEWAY] Evento {event_type} não relevante para cliente {client_id}")
         except Exception as e:
             print(f"[API GATEWAY] Erro ao notificar cliente {client_id}: {e}")
 
 @app.on_event("startup")
 async def startup_event():
-    """Inicializa consumidor RabbitMQ ao iniciar a aplicação"""
     print("[API GATEWAY] Inicializando consumidor RabbitMQ...")
     init_consumer()
     
-    # Iniciar consumidor RabbitMQ em thread separada
     rabbitmq_thread = threading.Thread(target=consume_rabbitmq_events, daemon=True)
     rabbitmq_thread.start()
     print("[API GATEWAY] Consumidor RabbitMQ iniciado")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Fecha conexões ao encerrar a aplicação"""
     print("[API GATEWAY] Encerrando...")
     if consumer_connection and not consumer_connection.is_closed:
         consumer_connection.close()

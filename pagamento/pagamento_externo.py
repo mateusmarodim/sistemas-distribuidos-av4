@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import threading
@@ -8,6 +9,15 @@ import random
 import uvicorn
 
 app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 pagamentos_pendentes = {}
 
@@ -19,9 +29,7 @@ class CallbackData(BaseModel):
 
 @app.get('/gerar-link-pagamento')
 async def gerar_link_pagamento(callback_url: str = None, id_vencedor: str = '', valor: str = "100.00"):
-    """
-    Gera um link de pagamento e retorna o endpoint para realizar o pagamento
-    """
+
     id_pagamento = str(uuid.uuid4())
     
     pagamentos_pendentes[id_pagamento] = {
@@ -43,9 +51,7 @@ async def gerar_link_pagamento(callback_url: str = None, id_vencedor: str = '', 
 
 @app.post('/realizar-pagamento/{id_pagamento}')
 async def realizar_pagamento(id_pagamento: str):
-    """
-    Simula o pagamento via terminal
-    """
+    
     if id_pagamento not in pagamentos_pendentes:
         raise HTTPException(status_code=404, detail='Pagamento não encontrado')
     
@@ -68,10 +74,8 @@ async def realizar_pagamento(id_pagamento: str):
 
 
 def enviar_callback(callback_url, id_pagamento, aprovado):
-    """
-    Envia POST ao microsserviço de pagamento informando o resultado
-    """
-    time.sleep(1)  # Pequeno delay para simular processamento
+   
+    time.sleep(1)
     
     try:
         response = requests.post(callback_url, json={

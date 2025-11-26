@@ -18,16 +18,13 @@ RABBIT_HOST = "localhost"
 
 app = FastAPI()
 
-# Armazenar informações de pagamentos (memória)
 pagamentos = {}
 
-# ---- Modelo para notificação externa ----
 class NotificacaoPagamento(BaseModel):
     id_pagamento: str
-    status: str  # "aprovada" ou "recusada"
+    status: str  
     detalhes: Optional[dict] = None
 
-# ---- Funções auxiliares RabbitMQ ----
 EVENTS = ['leilao_vencedor', 'link_pagamento', 'status_pagamento']
 
 def declare_all(channel: pika.adapters.blocking_connection.BlockingChannel):
@@ -37,13 +34,10 @@ def declare_all(channel: pika.adapters.blocking_connection.BlockingChannel):
         channel.queue_bind(exchange=event_name, queue=event_name, routing_key=event_name)
 
 def publish_event(exchange: str, routing_key: str, payload: dict):
-    """
-    Abre uma conexão curta para publicar (seguro entre threads).
-    """
     conn = pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST))
     try:
         ch = conn.channel()
-        declare_all(ch)  # idempotente
+        declare_all(ch)  
         ch.basic_publish(
             exchange=exchange,
             routing_key=routing_key,
@@ -53,7 +47,6 @@ def publish_event(exchange: str, routing_key: str, payload: dict):
     finally:
         conn.close()
 
-# ---- Sistema externo (mock/real) ----
 def gerar_link_pagamento(id_leilao: str, id_vencedor: str, valor: float):
     try:
         response = requests.get(
@@ -71,17 +64,16 @@ def gerar_link_pagamento(id_leilao: str, id_vencedor: str, valor: float):
         print(f"[PAGAMENTO] Erro ao gerar link de pagamento: {e}")
         return None
 
-# ---- Callback do consumidor ----
 def callback_leilao_vencedor(ch, method, props, body):
-    """
-    Callback para processar eventos de leilao_vencedor.
-    """
+
     try:
         print("[PAGAMENTO] >> ENTROU no callback_leilao_vencedor")
         msg = json.loads(body.decode("utf-8"))
-        id_leilao = msg.get("id_leilao")
-        id_vencedor = msg.get("id_vencedor")
-        valor = msg.get("valor")
+        print(f"[PAGAMENTO] Mensagem recebida: {msg}")
+        data = msg.get("data", {})
+        id_leilao = data.get("id_leilao")
+        id_vencedor = data.get("id_vencedor")
+        valor = data.get("valor")
 
         if id_leilao is None or id_vencedor is None or valor is None:
             print("[PAGAMENTO] Evento leilao_vencedor inválido - dados incompletos")
@@ -90,7 +82,6 @@ def callback_leilao_vencedor(ch, method, props, body):
 
         print(f"[PAGAMENTO] Processando leilão {id_leilao}, vencedor {id_vencedor}, valor {valor}")
 
-        # Chama sistema externo
         resultado = gerar_link_pagamento(id_leilao, id_vencedor, valor)
 
         if resultado:
@@ -102,7 +93,6 @@ def callback_leilao_vencedor(ch, method, props, body):
                 "status": resultado.get("status", "pendente")
             }
 
-            # Publica link_pagamento (usa o MESMO canal — estamos na thread do consumidor)
             evento_link = {
                 "id_pagamento": id_pagamento,
                 "id_leilao": id_leilao,
@@ -114,7 +104,7 @@ def callback_leilao_vencedor(ch, method, props, body):
             ch.basic_publish(
                 exchange='link_pagamento',
                 routing_key='link_pagamento',
-                body=json.dumps(evento_link).encode('utf-8'),
+                body=json.dumps({"type": "link_pagamento", "data": evento_link}).encode('utf-8'),
                 properties=pika.BasicProperties(delivery_mode=2, content_type="application/json")
             )
 
@@ -126,11 +116,7 @@ def callback_leilao_vencedor(ch, method, props, body):
         print(f"[PAGAMENTO] Erro ao processar leilao_vencedor: {e}")
         ch.basic_ack(method.delivery_tag)
 
-# ---- Thread de consumo (conexão/canal criados NA MESMA THREAD) ----
 def consume_rabbitmq_events():
-    """
-    Cria conexão e canal nesta thread e consome SOMENTE 'leilao_vencedor'.
-    """
     connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBIT_HOST))
     channel = connection.channel()
     declare_all(channel)
@@ -157,13 +143,8 @@ def consume_rabbitmq_events():
             pass
         connection.close()
 
-# ---- Endpoints FastAPI ----
 @app.post("/notificacao-pagamento")
 def receber_notificacao_pagamento(notificacao: NotificacaoPagamento):
-    """
-    Recebe notificações assíncronas do provedor externo (aprovada/recusada)
-    e publica 'status_pagamento'.
-    """
     try:
         id_pagamento = notificacao.id_pagamento
         status = notificacao.status.lower()
@@ -185,8 +166,7 @@ def receber_notificacao_pagamento(notificacao: NotificacaoPagamento):
             "detalhes": notificacao.detalhes
         }
 
-        # Publica usando conexão curta (seguro fora da thread do consumer)
-        publish_event('status_pagamento', 'status_pagamento', evento_status)
+        publish_event('status_pagamento', 'status_pagamento', {"type": "status_pagamento", "data": evento_status})
         print(f"[PAGAMENTO] Status de pagamento publicado: {status}")
 
         return {
@@ -211,7 +191,6 @@ def consultar_pagamento(id_pagamento: str):
         raise HTTPException(status_code=404, detail="Pagamento não encontrado")
     return pagamentos[id_pagamento]
 
-# ---- Lifecycle ----
 @app.on_event("startup")
 def startup_event():
     print("[PAGAMENTO] Inicializando consumidor RabbitMQ…")
